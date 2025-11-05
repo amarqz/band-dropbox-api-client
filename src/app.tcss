@@ -1,0 +1,58 @@
+Screen {
+    background: $surface;
+}
+
+#loading-view {
+    layout: vertical;
+    height: 100%;
+    width: 100%;
+    align: center middle;
+    padding: 2;
+}
+
+#loading__spinner {
+    width: 1fr;
+    margin-top: 1;
+}
+
+.loading__title {
+    text-style: bold;
+    color: $accent;
+    content-align: center middle;
+}
+
+.loading__subtitle {
+    color: $text-muted;
+    content-align: center middle;
+    margin-top: 1;
+}
+
+#main-view {
+    display: none;
+    layout: vertical;
+    height: 100%;
+    width: 100%;
+}
+
+#main-panels {
+    height: 1fr;
+    layout: horizontal;
+    padding: 1 2;
+}
+
+.panel {
+    border: tall $accent;
+    background: $surface-darken-1;
+    padding: 1;
+    width: 1fr;
+    margin-right: 1;
+}
+
+.panel__title {
+    text-style: bold;
+}
+
+.panel__body {
+    color: $text-muted;
+    margin-top: 1;
+}
