@@ -83,6 +83,8 @@ class AppConfig(BaseConfig):
     title: str = "Band Dropbox Client"
     loading_message: str = "Warming up the stage..."
     library_title: str = "Library"
+    library_path: str = ""
+    library_suffix: str | None = None
     library_placeholder: str = "Dropbox folders and files will appear here once the data layer is ready."
     detail_title: str = "Details"
     detail_placeholder: str = "Select an item to see its metadata and preview details."
