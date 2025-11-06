@@ -51,7 +51,7 @@ class BaseConfig:
                 merged.update(parser[section])
 
         init_values: dict[str, Any] = {}
-        for field in fields(cls):
+        for field in fields(cls): # type: ignore[attr-defined]
             value = merged.get(field.name)
             if value is None:
                 continue
@@ -63,13 +63,13 @@ class BaseConfig:
 
     def with_overrides(self: _ConfigT, **overrides: Any) -> _ConfigT:
         """Return a copy with explicit overrides."""
-        current = {field.name: getattr(self, field.name) for field in fields(self)}
+        current = {field.name: getattr(self, field.name) for field in fields(self)} # type: ignore[attr-defined]
         current.update({key: value for key, value in overrides.items() if key in current})
         return type(self)(**current)
 
     def as_dict(self) -> dict[str, Any]:
         """Expose a plain dict for diagnostics or templating."""
-        return {field.name: getattr(self, field.name) for field in fields(self)}
+        return {field.name: getattr(self, field.name) for field in fields(self)} # type: ignore[attr-defined]
 
 
 @dataclass(frozen=True)
