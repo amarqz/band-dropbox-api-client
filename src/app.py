@@ -3,18 +3,36 @@
 from __future__ import annotations
 
 import asyncio
+from typing import NamedTuple
 
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
-from textual.widgets import Footer, Header, LoadingIndicator, OptionList, Static
+from textual.widgets import Button, Footer, Header, LoadingIndicator, OptionList, Static
 from textual.widgets.option_list import Option
 
 from .config import APP_CONFIG, AppConfig, DBX_CONFIG
 from .client.dropbox_client import DropboxClient
 from .util import contains_any_substring, strip_suffix
+
+
+class SelectionAction(NamedTuple):
+    """Represents a library selection toggle that can be undone."""
+
+    entry: str
+    previous_state: bool
+
+
+class InstrumentAction(NamedTuple):
+    """Represents an instrument count adjustment."""
+
+    entry: str
+    delta: int
+
+
+Action = SelectionAction | InstrumentAction
 
 
 class BandDropboxApp(App[None]):
@@ -39,6 +57,8 @@ class BandDropboxApp(App[None]):
         self._instrument_entries: list[str] = []
         self._instrument_counts: dict[str, int] = {}
         self._instrument_highlight_index: int = 0
+        self._action_history: list[Action] = []
+        self._start_task: asyncio.Task[None] | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the initial widget tree."""
@@ -65,40 +85,61 @@ class BandDropboxApp(App[None]):
                 Vertical(
                 Container(
                     Static(self.app_config.detail_title, classes="panel__title"),
-                    Horizontal(
-                        Container(
-                            Static(
-                                "Selected items (0)",
-                                classes="detail__header",
-                                id="detail-library-title",
-                            ),
-                            VerticalScroll(
-                                Static(
-                                    self.app_config.detail_library_placeholder,
-                                    classes="panel__body detail__content",
-                                    id="detail-library",
+                    Vertical(
+                        VerticalScroll(
+                            Horizontal(
+                                Container(
+                                    Static(
+                                        "Selected items (0)",
+                                        classes="detail__header",
+                                        id="detail-library-title",
+                                    ),
+                                    VerticalScroll(
+                                        Static(
+                                            self.app_config.detail_library_placeholder,
+                                            classes="panel__body detail__content",
+                                            id="detail-library",
+                                        ),
+                                        classes="detail__section",
+                                    ),
+                                    classes="detail__column",
                                 ),
-                                classes="detail__section",
-                            ),
-                            classes="detail__column",
-                        ),
-                        Container(
-                            Static(
-                                "Instrument counts (0)",
-                                classes="detail__header",
-                                id="detail-instruments-title",
-                            ),
-                            VerticalScroll(
-                                Static(
-                                    self.app_config.detail_instruments_placeholder,
-                                    classes="panel__body detail__content",
-                                    id="detail-instruments",
+                                Container(
+                                    Static(
+                                        "Instrument counts (0)",
+                                        classes="detail__header",
+                                        id="detail-instruments-title",
+                                    ),
+                                    VerticalScroll(
+                                        Static(
+                                            self.app_config.detail_instruments_placeholder,
+                                            classes="panel__body detail__content",
+                                            id="detail-instruments",
+                                        ),
+                                        classes="detail__section",
+                                    ),
+                                    classes="detail__column",
                                 ),
-                                classes="detail__section",
+                                id="detail-content",
                             ),
-                            classes="detail__column",
+                            classes="detail__scroll",
                         ),
-                        id="detail-content",
+                        Horizontal(
+                            Button(
+                                "Undo",
+                                id="detail-action-undo",
+                            ),
+                            Button(
+                                "Clear",
+                                id="detail-action-clear",
+                            ),
+                            Button(
+                                "Start",
+                                id="detail-action-start",
+                            ),
+                            classes="detail__actions",
+                        ),
+                        id="detail-body",
                     ),
                     classes="panel",
                     id="detail-panel",
@@ -195,6 +236,7 @@ class BandDropboxApp(App[None]):
         self._library_entries = contents
         self._selected_entries.clear()
         self._highlight_index = 0
+        self._action_history.clear()
         self._refresh_library_options()
         self._update_detail_panel()
 
@@ -204,6 +246,7 @@ class BandDropboxApp(App[None]):
         self._library_entries = []
         self._selected_entries.clear()
         self._highlight_index = 0
+        self._action_history.clear()
         library_list = self.query_one("#library-list", OptionList)
         library_list.clear_options()
         library_list.add_option(
@@ -222,6 +265,7 @@ class BandDropboxApp(App[None]):
             entry: self._instrument_counts.get(entry, 0) for entry in entries
         }
         self._instrument_highlight_index = 0
+        self._action_history.clear()
         self._refresh_instrument_options()
         self._update_detail_panel()
 
@@ -230,6 +274,7 @@ class BandDropboxApp(App[None]):
         self._instrument_entries = []
         self._instrument_counts.clear()
         self._instrument_highlight_index = 0
+        self._action_history.clear()
         instrument_list = self.query_one("#instrument-list", OptionList)
         instrument_list.clear_options()
         instrument_list.add_option(
@@ -258,13 +303,7 @@ class BandDropboxApp(App[None]):
 
             entry = self._library_entries[index]
             self._highlight_index = index
-            if entry in self._selected_entries:
-                self._selected_entries.remove(entry)
-            else:
-                self._selected_entries.add(entry)
-
-            self._refresh_library_options()
-            self._update_detail_panel()
+            self._toggle_library_entry(entry)
             return
 
         if list_id == "instrument-list":
@@ -451,13 +490,105 @@ class BandDropboxApp(App[None]):
             elif option_list.id == "instrument-list":
                 self._instrument_highlight_index = index
 
-    def _adjust_instrument_count(self, entry: str, delta: int) -> None:
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle control button clicks below the detail panel."""
+        button_id = event.button.id or ""
+        if button_id == "detail-action-undo":
+            self._undo_last_action()
+            return
+        if button_id == "detail-action-clear":
+            self._clear_all_selections()
+            return
+        if button_id == "detail-action-start":
+            self._handle_start_button(event.button)
+
+    def _toggle_library_entry(self, entry: str, *, record_history: bool = True) -> None:
+        """Toggle a single library entry selection and record the change."""
+        was_selected = entry in self._selected_entries
+        new_state = not was_selected
+        if new_state:
+            self._selected_entries.add(entry)
+        else:
+            self._selected_entries.discard(entry)
+        if record_history:
+            self._action_history.append(SelectionAction(entry, was_selected))
+        self._refresh_library_options()
+        self._update_detail_panel()
+
+    def _restore_selection(self, entry: str, previous_state: bool) -> None:
+        """Restore a library entry to a prior selection state."""
+        if previous_state:
+            self._selected_entries.add(entry)
+        else:
+            self._selected_entries.discard(entry)
+        self._refresh_library_options()
+        self._update_detail_panel()
+
+    def _adjust_instrument_count(
+        self,
+        entry: str,
+        delta: int,
+        *,
+        record_history: bool = True,
+    ) -> None:
         """Adjust the selection count for an instrument entry."""
+        if delta == 0:
+            return
         current = self._instrument_counts.get(entry, 0)
         new_value = max(0, current + delta)
+        if new_value == current:
+            return
+        applied_delta = new_value - current
         self._instrument_counts[entry] = new_value
+        if record_history:
+            self._action_history.append(InstrumentAction(entry, applied_delta))
         self._refresh_instrument_options()
         self._update_detail_panel()
+
+    def _undo_last_action(self) -> None:
+        """Revert the most recent selection or instrument adjustment."""
+        if not self._action_history:
+            return
+        action = self._action_history.pop()
+        if isinstance(action, SelectionAction):
+            self._restore_selection(action.entry, action.previous_state)
+            return
+        if isinstance(action, InstrumentAction):
+            self._adjust_instrument_count(
+                action.entry,
+                -action.delta,
+                record_history=False,
+            )
+
+    def _clear_all_selections(self) -> None:
+        """Reset both the selected entries and instrument counts."""
+        has_library_selection = bool(self._selected_entries)
+        has_instruments = any(count > 0 for count in self._instrument_counts.values())
+        if not has_library_selection and not has_instruments:
+            return
+        self._selected_entries.clear()
+        for entry in list(self._instrument_counts.keys()):
+            self._instrument_counts[entry] = 0
+        self._action_history.clear()
+        self._refresh_library_options()
+        self._refresh_instrument_options()
+        self._update_detail_panel()
+
+    def _handle_start_button(self, button: Button) -> None:
+        """Kick off the asynchronous start countdown, if not already running."""
+        if self._start_task and not self._start_task.done():
+            return
+        self._start_task = asyncio.create_task(self._run_start_sequence(button))
+
+    async def _run_start_sequence(self, button: Button) -> None:
+        """Simulate a short async operation by counting to three."""
+        button.label = "In progress..."
+        try:
+            for _ in range(3):
+                await asyncio.sleep(1)
+        finally:
+            button.label = "Start"
+            self._start_task = None
 
     @staticmethod
     def _is_decrement_event(input_event: events.Event | None) -> bool:
