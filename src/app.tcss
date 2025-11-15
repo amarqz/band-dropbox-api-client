@@ -63,6 +63,19 @@ Screen {
     layout: vertical;
 }
 
+.library__body {
+    layout: vertical;
+    height: 1fr;
+}
+
+#library-list {
+    height: 1fr;
+}
+
+#library-filter {
+    margin-top: 1;
+}
+
 #detail-body {
     layout: grid;
     grid-size: 1 2;
