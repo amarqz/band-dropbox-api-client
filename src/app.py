@@ -9,7 +9,6 @@ from typing import NamedTuple
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
-from textual.binding import Binding
 from textual.command import DiscoveryHit, Hit, Provider
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
