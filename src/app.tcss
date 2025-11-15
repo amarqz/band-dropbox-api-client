@@ -43,7 +43,8 @@ Screen {
 .panel {
     border: tall $accent;
     background: $surface-darken-1;
-    padding: 1;
+    padding-left: 1;
+    padding-right: 1;
     width: 1fr;
     margin-right: 1;
 }
@@ -54,5 +55,40 @@ Screen {
 
 .panel__body {
     color: $text-muted;
+    margin-top: 1;
+}
+
+#detail-panel {
+    height: 1fr;
+}
+
+#detail-content {
+    layout: horizontal;
+    height: 1fr;
+}
+
+.detail__column {
+    layout: vertical;
+    width: 1fr;
+    height: 1fr;
+}
+
+.detail__section {
+    width: 1fr;
+    height: 1fr;
+}
+
+.detail__content {
+    margin-top: 0;
+    padding-right: 1;
+}
+
+.detail__header {
+    text-style: bold;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+#instrument-panel {
     margin-top: 1;
 }
