@@ -88,6 +88,8 @@ class AppConfig(BaseConfig):
     library_placeholder: str = "Dropbox folders and files will appear here once the data layer is ready."
     detail_title: str = "Details"
     detail_placeholder: str = "Select an item to see its metadata and preview details."
+    detail_library_placeholder: str = "No library selections yet."
+    detail_instruments_placeholder: str = "No instrument counts yet."
     instruments_title: str = "Instruments"
     instruments_placeholder: str = "Instrument folders will appear here once loaded."
     instruments_empty_message: str = "No instruments found."

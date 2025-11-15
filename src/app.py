@@ -7,7 +7,7 @@ import asyncio
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.widgets import Footer, Header, LoadingIndicator, OptionList, Static
 from textual.widgets.option_list import Option
@@ -63,16 +63,46 @@ class BandDropboxApp(App[None]):
                     id="library-panel",
                 ),
                 Vertical(
-                    Container(
-                        Static(self.app_config.detail_title, classes="panel__title"),
-                        Static(
-                            self.app_config.detail_placeholder,
-                            classes="panel__body",
-                            id="detail-body",
+                Container(
+                    Static(self.app_config.detail_title, classes="panel__title"),
+                    Horizontal(
+                        Container(
+                            Static(
+                                "Selected items (0)",
+                                classes="detail__header",
+                                id="detail-library-title",
+                            ),
+                            VerticalScroll(
+                                Static(
+                                    self.app_config.detail_library_placeholder,
+                                    classes="panel__body detail__content",
+                                    id="detail-library",
+                                ),
+                                classes="detail__section",
+                            ),
+                            classes="detail__column",
                         ),
-                        classes="panel",
-                        id="detail-panel",
+                        Container(
+                            Static(
+                                "Instrument counts (0)",
+                                classes="detail__header",
+                                id="detail-instruments-title",
+                            ),
+                            VerticalScroll(
+                                Static(
+                                    self.app_config.detail_instruments_placeholder,
+                                    classes="panel__body detail__content",
+                                    id="detail-instruments",
+                                ),
+                                classes="detail__section",
+                            ),
+                            classes="detail__column",
+                        ),
+                        id="detail-content",
                     ),
+                    classes="panel",
+                    id="detail-panel",
+                ),
                     Container(
                         Static(self.app_config.instruments_title, classes="panel__title"),
                         OptionList(
@@ -327,20 +357,27 @@ class BandDropboxApp(App[None]):
 
     def _update_detail_panel(self, *, error: bool = False) -> None:
         """Refresh the detail panel content based on current selection state."""
-        detail_panel = self.query_one("#detail-body", Static)
+        detail_library = self.query_one("#detail-library", Static)
+        detail_instruments = self.query_one("#detail-instruments", Static)
+        detail_library_title = self.query_one("#detail-library-title", Static)
+        detail_instruments_title = self.query_one("#detail-instruments-title", Static)
 
         if error:
-            detail_panel.update("Unable to show details.")
+            detail_library.update("Unable to show details.")
+            detail_instruments.update("Unable to show details.")
+            detail_library_title.update("Selected items (0)")
+            detail_instruments_title.update("Instrument counts (0)")
             return
 
-        sections: list[str] = []
-
-        if self._selected_entries:
+        selected_count = len(self._selected_entries)
+        detail_library_title.update(f"Selected items ({selected_count})")
+        if selected_count:
             library_lines = "\n".join(sorted(self._selected_entries, key=str.lower))
-            sections.append(
-                f"Selected items ({len(self._selected_entries)}):\n{library_lines}"
-            )
+            detail_library.update(library_lines)
+        else:
+            detail_library.update(self.app_config.detail_library_placeholder)
 
+        instrument_section = ""
         counted_instruments = [
             (entry, count)
             for entry, count in sorted(
@@ -348,18 +385,17 @@ class BandDropboxApp(App[None]):
             )
             if count > 0
         ]
+        detail_instruments_title.update(
+            f"Instrument counts ({len(counted_instruments)})"
+        )
         if counted_instruments:
-            instrument_lines = "\n".join(
+            instrument_section = "\n".join(
                 f"{entry}: {count}" for entry, count in counted_instruments
             )
-            sections.append(
-                f"Instrument counts ({len(counted_instruments)}):\n{instrument_lines}"
-            )
-
-        if sections:
-            detail_panel.update("\n\n".join(sections))
         else:
-            detail_panel.update(self.app_config.detail_placeholder)
+            instrument_section = self.app_config.detail_instruments_placeholder
+
+        detail_instruments.update(instrument_section)
 
     def action_toggle_option(self) -> None:
         """Toggle the selection state for the focused library entry."""
