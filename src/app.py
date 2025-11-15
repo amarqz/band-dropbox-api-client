@@ -3,19 +3,29 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from typing import NamedTuple
 
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.command import DiscoveryHit, Hit, Provider
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
-from textual.command import DiscoveryHit, Hit, Provider
-from textual.widgets import Button, Footer, Header, LoadingIndicator, OptionList, Static
+from textual.widgets import (
+    Button,
+    Footer,
+    Header,
+    Input,
+    LoadingIndicator,
+    OptionList,
+    Static,
+)
 from textual.widgets.option_list import Option
 
-from .config import APP_CONFIG, AppConfig, DBX_CONFIG
 from .client.dropbox_client import DropboxClient
+from .config import APP_CONFIG, AppConfig, DBX_CONFIG
 from .util import contains_any_substring, strip_suffix
 
 
@@ -68,6 +78,14 @@ class StartCommandProvider(Provider):
         self.app.action_start_detail_action()
 
 
+class FilterInput(Input):
+    """Input widget that supports familiar Ctrl+Backspace behavior."""
+
+    BINDINGS = Input.BINDINGS + [
+        Binding("ctrl+backspace", "delete_left_word", "Delete previous word", show=False),
+    ]
+
+
 class BandDropboxApp(App[None]):
     """Textual application with a simple splash screen and main layout."""
 
@@ -75,10 +93,11 @@ class BandDropboxApp(App[None]):
     COMMANDS = App.COMMANDS | {StartCommandProvider}
     BINDINGS = [
         ("q", "quit", "Quit"),
+        ("s", "start_detail_action", "Start"),
         ("space", "toggle_option", "Toggle Selection"),
         ("u", "undo_detail_action", "Undo"),
         ("c", "clear_detail_action", "Clear"),
-        ("s", "start_detail_action", "Start"),
+        ("d", "clear_library_filter", "Reset Filter"),
     ]
 
     is_loading = reactive(True)
@@ -89,6 +108,8 @@ class BandDropboxApp(App[None]):
         self.app_config = app_config or APP_CONFIG
         self._dbx_client: DropboxClient | None = None
         self._library_entries: list[str] = []
+        self._filtered_library_entries: list[str] = []
+        self._library_filter_text: str = ""
         self._selected_entries: set[str] = set()
         self._highlight_index: int = 0
         self._instrument_entries: list[str] = []
@@ -111,10 +132,17 @@ class BandDropboxApp(App[None]):
             Horizontal(
                 Container(
                     Static(self.app_config.library_title, classes="panel__title"),
-                    OptionList(
-                        Option(self.app_config.library_placeholder, disabled=True),
-                        classes="panel__body",
-                        id="library-list",
+                    Vertical(
+                        OptionList(
+                            Option(self.app_config.library_placeholder, disabled=True),
+                            classes="panel__body",
+                            id="library-list",
+                        ),
+                        Input(
+                            placeholder="Filter items...",
+                            id="library-filter",
+                        ),
+                        classes="library__body",
                     ),
                     classes="panel",
                     id="library-panel",
@@ -271,19 +299,27 @@ class BandDropboxApp(App[None]):
         """Render the fetched Dropbox contents in the library panel."""
         self.is_loading = False
         self._library_entries = contents
+        self._filtered_library_entries = list(contents)
         self._selected_entries.clear()
         self._highlight_index = 0
         self._action_history.clear()
-        self._refresh_library_options()
+        if not self._library_filter_text:
+            self._refresh_library_options()
+        else:
+            self._apply_library_filter()
         self._update_detail_panel()
 
     def _on_library_error(self, message: str) -> None:
         """Display error information when Dropbox calls fail."""
         self.is_loading = False
         self._library_entries = []
+        self._filtered_library_entries = []
+        self._library_filter_text = ""
         self._selected_entries.clear()
         self._highlight_index = 0
         self._action_history.clear()
+        with suppress(LookupError):
+            self.query_one("#library-filter", Input).value = ""
         library_list = self.query_one("#library-list", OptionList)
         library_list.clear_options()
         library_list.add_option(
@@ -335,10 +371,10 @@ class BandDropboxApp(App[None]):
             return
 
         if list_id == "library-list":
-            if not 0 <= index < len(self._library_entries):
+            if not 0 <= index < len(self._filtered_library_entries):
                 return
 
-            entry = self._library_entries[index]
+            entry = self._filtered_library_entries[index]
             self._highlight_index = index
             self._toggle_library_entry(entry)
             return
@@ -360,14 +396,18 @@ class BandDropboxApp(App[None]):
         library_list = self.query_one("#library-list", OptionList)
         library_list.clear_options()
 
-        if not self._library_entries:
-            library_list.add_option(Option("This folder is empty.", disabled=True))
+        if not self._filtered_library_entries:
+            if self._library_entries and self._library_filter_text:
+                message = "No entries match the filter."
+            else:
+                message = "This folder is empty."
+            library_list.add_option(Option(message, disabled=True))
             self._highlight_index = 0
             return
 
-        target_index = min(self._highlight_index, len(self._library_entries) - 1)
+        target_index = min(self._highlight_index, len(self._filtered_library_entries) - 1)
 
-        for index, entry in enumerate(self._library_entries):
+        for index, entry in enumerate(self._filtered_library_entries):
             marker = "[x]" if entry in self._selected_entries else "[ ]"
             prompt = Text.assemble(marker, " ", entry)
             library_list.add_option(
@@ -390,6 +430,18 @@ class BandDropboxApp(App[None]):
                     break
 
         self._highlight_index = target_index
+
+    def _apply_library_filter(self) -> None:
+        """Filter visible library entries based on input text."""
+        query = self._library_filter_text.strip().lower()
+        if not query:
+            self._filtered_library_entries = list(self._library_entries)
+        else:
+            self._filtered_library_entries = [
+                entry for entry in self._library_entries if query in entry.lower()
+            ]
+        self._highlight_index = 0
+        self._refresh_library_options()
 
     def _refresh_instrument_options(self) -> None:
         """Render instrument options with counts while keeping focus."""
@@ -492,6 +544,15 @@ class BandDropboxApp(App[None]):
         button = self.query_one("#detail-action-start", Button)
         self._handle_start_button(button)
 
+    def action_clear_library_filter(self) -> None:
+        """Clear the library filter and refocus the input."""
+        with suppress(LookupError):
+            filter_input = self.query_one("#library-filter", Input)
+            filter_input.value = ""
+            filter_input.focus()
+        self._library_filter_text = ""
+        self._apply_library_filter()
+
     def on_key(self, event: events.Key) -> None:
         """Handle global key presses for manual adjustments."""
         if event.key in {"delete", "backspace"}:
@@ -539,6 +600,12 @@ class BandDropboxApp(App[None]):
                 self._highlight_index = index
             elif option_list.id == "instrument-list":
                 self._instrument_highlight_index = index
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Apply the library filter as the user types."""
+        if event.input.id == "library-filter":
+            self._library_filter_text = event.value
+            self._apply_library_filter()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle control button clicks below the detail panel."""
