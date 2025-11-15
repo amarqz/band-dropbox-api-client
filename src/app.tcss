@@ -88,3 +88,7 @@ Screen {
     margin-top: 0;
     margin-bottom: 0;
 }
+
+#instrument-panel {
+    margin-top: 1;
+}
