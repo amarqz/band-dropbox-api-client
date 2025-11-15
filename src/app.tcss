@@ -60,10 +60,35 @@ Screen {
 
 #detail-panel {
     height: 1fr;
+    layout: vertical;
+}
+
+.library__body {
+    layout: vertical;
+    height: 1fr;
+}
+
+#library-list {
+    height: 1fr;
+}
+
+#library-filter {
+    margin-top: 1;
+}
+
+#detail-body {
+    layout: grid;
+    grid-size: 1 2;
+    grid-rows: 1fr auto;
+    height: 1fr;
 }
 
 #detail-content {
     layout: horizontal;
+    height: 1fr;
+}
+
+.detail__scroll {
     height: 1fr;
 }
 
@@ -87,6 +112,16 @@ Screen {
     text-style: bold;
     margin-top: 0;
     margin-bottom: 0;
+}
+
+.detail__actions {
+    layout: horizontal;
+    margin-bottom: 0
+}
+
+.detail__actions Button {
+    width: 1fr;
+    margin-right: 1;
 }
 
 #instrument-panel {
