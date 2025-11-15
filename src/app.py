@@ -99,6 +99,7 @@ class BandDropboxApp(App[None]):
         super().__init__(**kwargs)
         self.app_config = app_config or APP_CONFIG
         self._dbx_client: DropboxClient | None = None
+        self._startup_task: asyncio.Task[None] | None = None
         self._library_entries: list[str] = []
         self._filtered_library_entries: list[str] = []
         self._library_filter_text: str = ""
@@ -225,12 +226,19 @@ class BandDropboxApp(App[None]):
 
     async def on_mount(self) -> None:
         """Kick off startup tasks when the application mounts."""
-        await self._startup()
+        self._startup_task = asyncio.create_task(self._startup())
+
+    async def on_unmount(self) -> None:
+        """Cancel the startup task if the application exits early."""
+        if self._startup_task and not self._startup_task.done():
+            self._startup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._startup_task
 
     async def _startup(self) -> None:
         """Start the application by connecting to Dropbox and loading initial data."""
         try:
-            self._dbx_client = DropboxClient(DBX_CONFIG)
+            self._dbx_client = await asyncio.to_thread(DropboxClient, DBX_CONFIG)
         except Exception as exc:
             message = str(exc)
             self._on_library_error(message)
