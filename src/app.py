@@ -78,14 +78,6 @@ class StartCommandProvider(Provider):
         self.app.action_start_detail_action()
 
 
-class FilterInput(Input):
-    """Input widget that supports familiar Ctrl+Backspace behavior."""
-
-    BINDINGS = Input.BINDINGS + [
-        Binding("ctrl+backspace", "delete_left_word", "Delete previous word", show=False),
-    ]
-
-
 class BandDropboxApp(App[None]):
     """Textual application with a simple splash screen and main layout."""
 
