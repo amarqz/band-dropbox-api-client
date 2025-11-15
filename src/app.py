@@ -10,6 +10,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
+from textual.command import DiscoveryHit, Hit, Provider
 from textual.widgets import Button, Footer, Header, LoadingIndicator, OptionList, Static
 from textual.widgets.option_list import Option
 
@@ -35,13 +36,49 @@ class InstrumentAction(NamedTuple):
 Action = SelectionAction | InstrumentAction
 
 
+class StartCommandProvider(Provider):
+    """Expose the start action through Textual's command palette."""
+
+    _COMMAND_LABEL = "Start action"
+
+    async def search(self, query: str):
+        """Return hits for palette searches."""
+        matcher = self.matcher(query)
+        score = matcher.match(self._COMMAND_LABEL)
+        if score:
+            yield Hit(
+                score,
+                matcher.highlight(self._COMMAND_LABEL),
+                self._trigger_start,
+                text=self._COMMAND_LABEL,
+                help="Trigger the Start action for the detail panel.",
+            )
+
+    async def discover(self):
+        """Provide a default hit when the palette opens."""
+        yield DiscoveryHit(
+            self._COMMAND_LABEL,
+            self._trigger_start,
+            text=self._COMMAND_LABEL,
+            help="Trigger the Start action for the detail panel.",
+        )
+
+    def _trigger_start(self) -> None:
+        """Invoke the application's start action."""
+        self.app.action_start_detail_action()
+
+
 class BandDropboxApp(App[None]):
     """Textual application with a simple splash screen and main layout."""
 
     CSS_PATH = "app.tcss"
+    COMMANDS = App.COMMANDS | {StartCommandProvider}
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("space", "toggle_option", "Toggle Selection"),
+        ("u", "undo_detail_action", "Undo"),
+        ("c", "clear_detail_action", "Clear"),
+        ("s", "start_detail_action", "Start"),
     ]
 
     is_loading = reactive(True)
@@ -442,9 +479,22 @@ class BandDropboxApp(App[None]):
         if isinstance(focused, OptionList):
             focused.action_select()
 
+    def action_undo_detail_action(self) -> None:
+        """Undo the most recent selection or instrument adjustment."""
+        self._undo_last_action()
+
+    def action_clear_detail_action(self) -> None:
+        """Clear all selections via keyboard bindings."""
+        self._clear_all_selections()
+
+    def action_start_detail_action(self) -> None:
+        """Trigger the start action from a keyboard binding."""
+        button = self.query_one("#detail-action-start", Button)
+        self._handle_start_button(button)
+
     def on_key(self, event: events.Key) -> None:
         """Handle global key presses for manual adjustments."""
-        if event.key in {"backspace", "delete"}:
+        if event.key in {"delete", "backspace"}:
             focused = self.focused
             if isinstance(focused, OptionList) and focused.id == "instrument-list":
                 index = getattr(focused, "index", None)
