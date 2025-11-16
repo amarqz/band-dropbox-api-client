@@ -18,8 +18,8 @@ from .controllers.library import LibraryController
 from .services.startup import load_initial_data
 from .ui.commands import StartCommandProvider
 from .ui.detail_panel import build_detail_panel_content
+from .ui.event_handlers import InstrumentEventHandler, LibraryEventHandler
 from .ui.layout import compose_layout
-from .ui.options import option_index
 from .util import strip_suffix
 
 
@@ -54,6 +54,18 @@ class BandDropboxApp(App[None]):
         self.history = ActionHistory()
         self._startup_task: asyncio.Task[None] | None = None
         self._start_task: asyncio.Task[None] | None = None
+        self.library_events = LibraryEventHandler(
+            controller=self.library_controller,
+            history=self.history,
+            get_option_list=self._library_list,
+            refresh_detail=lambda: self._update_detail_panel(),
+        )
+        self.instrument_events = InstrumentEventHandler(
+            controller=self.instrument_controller,
+            history=self.history,
+            get_option_list=self._instrument_list,
+            refresh_detail=lambda: self._update_detail_panel(),
+        )
 
     def compose(self) -> ComposeResult:
         """Compose the initial widget tree."""
@@ -104,7 +116,7 @@ class BandDropboxApp(App[None]):
         self.is_loading = False
         self.history.clear()
         self.library_controller.load_entries(contents)
-        self.library_controller.refresh_options(self._library_list())
+        self.library_events.refresh_options()
         self._update_detail_panel()
 
     def _on_library_error(self, message: str) -> None:
@@ -130,7 +142,7 @@ class BandDropboxApp(App[None]):
         """Render the fetched instruments in the instruments panel."""
         self.history.clear()
         self.instrument_controller.load_entries(entries)
-        self.instrument_controller.refresh_options(self._instrument_list())
+        self.instrument_events.refresh_options()
         self._update_detail_panel()
 
     def _on_instruments_error(self, message: str) -> None:
@@ -150,52 +162,20 @@ class BandDropboxApp(App[None]):
         event: OptionList.OptionSelected,
     ) -> None:
         """Handle option selections for library and instrument lists."""
-        option_list = event.option_list
-        list_id = option_list.id or ""
-        if event.option.disabled:
+        if self.library_events.handle_option_selected(event):
             return
-
-        index = option_index(event.option)
-        if index is None:
+        if self.instrument_events.handle_option_selected(event):
             return
-
-        if list_id == "library-list":
-            entry = self.library_controller.entry_for_filtered_index(index)
-            if entry is None:
-                return
-            self.library_controller.set_highlight(index)
-            action = self.library_controller.toggle_entry(entry)
-            self.history.push(action)
-            self.library_controller.refresh_options(option_list)
-            self._update_detail_panel()
-            return
-
-        if list_id == "instrument-list":
-            entry = self.instrument_controller.entry_for_index(index)
-            if entry is None:
-                return
-            self.instrument_controller.set_highlight(index)
-            input_event = getattr(event, "input_event", None)
-            delta = -1 if self._is_decrement_event(input_event) else 1
-            action = self.instrument_controller.adjust_count(entry, delta)
-            if action:
-                self.history.push(action)
-                self.instrument_controller.refresh_options(option_list)
-                self._update_detail_panel()
 
     def on_option_list_option_highlighted(
         self,
         event: OptionList.OptionHighlighted,
     ) -> None:
         """Track the highlighted index so the cursor doesn't jump on refresh."""
-        index = option_index(event.option)
-        if index is None:
+        if self.library_events.handle_option_highlighted(event):
             return
-        option_list = event.option_list
-        if option_list.id == "library-list":
-            self.library_controller.set_highlight(index)
-        elif option_list.id == "instrument-list":
-            self.instrument_controller.set_highlight(index)
+        if self.instrument_events.handle_option_highlighted(event):
+            return
 
     def action_toggle_option(self) -> None:
         """Toggle the selection state for the focused library entry."""
@@ -222,14 +202,12 @@ class BandDropboxApp(App[None]):
             filter_input = self.query_one("#library-filter", Input)
             filter_input.value = ""
             filter_input.focus()
-        self.library_controller.clear_filter()
-        self.library_controller.refresh_options(self._library_list())
+        self.library_events.clear_filter()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Apply the library filter as the user types."""
         if event.input.id == "library-filter":
-            self.library_controller.set_filter_text(event.value)
-            self.library_controller.refresh_options(self._library_list())
+            self.library_events.handle_filter_changed(event.value)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle control button clicks below the detail panel."""
@@ -247,43 +225,20 @@ class BandDropboxApp(App[None]):
         """Handle global key presses for manual adjustments."""
         if event.key in {"delete", "backspace"}:
             focused = self.focused
-            if isinstance(focused, OptionList) and focused.id == "instrument-list":
-                index = getattr(focused, "index", None)
-                if isinstance(index, int):
-                    entry = self.instrument_controller.entry_for_index(index)
-                    if entry:
-                        self.instrument_controller.set_highlight(index)
-                        action = self.instrument_controller.adjust_count(entry, -1)
-                        if action:
-                            self.history.push(action)
-                            self.instrument_controller.refresh_options(focused)
-                            self._update_detail_panel()
-                            event.stop()
-                            return
+            if self.instrument_events.handle_keyboard_decrement(
+                focused if isinstance(focused, OptionList) else None
+            ):
+                event.stop()
+                return
         handler = getattr(super(), "on_key", None)
         if handler:
             handler(event)
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         """Handle right clicks on the instrument list to decrement counts."""
-        button = getattr(event, "button", None)
-        button_name = getattr(button, "name", str(button) if button is not None else "")
-        if str(button_name).lower() in {"right", "secondary"}:
-            instrument_list = self._instrument_list()
-            path = getattr(event, "path", [])
-            if instrument_list in path:
-                index = getattr(instrument_list, "index", None)
-                if isinstance(index, int):
-                    entry = self.instrument_controller.entry_for_index(index)
-                    if entry:
-                        self.instrument_controller.set_highlight(index)
-                        action = self.instrument_controller.adjust_count(entry, -1)
-                        if action:
-                            self.history.push(action)
-                            self.instrument_controller.refresh_options(instrument_list)
-                            self._update_detail_panel()
-                            event.stop()
-                            return
+        if self.instrument_events.handle_mouse_decrement(event):
+            event.stop()
+            return
         handler = getattr(super(), "on_mouse_down", None)
         if handler:
             handler(event)
@@ -295,10 +250,10 @@ class BandDropboxApp(App[None]):
             return
         if isinstance(action, SelectionAction):
             self.library_controller.restore_selection(action.entry, action.previous_state)
-            self.library_controller.refresh_options(self._library_list())
+            self.library_events.refresh_options()
         elif isinstance(action, InstrumentAction):
             self.instrument_controller.adjust_count(action.entry, -action.delta)
-            self.instrument_controller.refresh_options(self._instrument_list())
+            self.instrument_events.refresh_options()
         self._update_detail_panel()
 
     def _clear_all_selections(self) -> None:
@@ -308,8 +263,8 @@ class BandDropboxApp(App[None]):
         if not cleared_library and not cleared_instruments:
             return
         self.history.clear()
-        self.library_controller.refresh_options(self._library_list())
-        self.instrument_controller.refresh_options(self._instrument_list())
+        self.library_events.refresh_options()
+        self.instrument_events.refresh_options()
         self._update_detail_panel()
 
     def _handle_start_button(self, button: Button) -> None:
@@ -344,20 +299,6 @@ class BandDropboxApp(App[None]):
         detail_library.update(content.library_body)
         detail_instruments_title.update(content.instruments_title)
         detail_instruments.update(content.instruments_body)
-
-    @staticmethod
-    def _is_decrement_event(input_event: events.Event | None) -> bool:
-        """Return True if the originating input should decrement a count."""
-        if input_event is None:
-            return False
-        if isinstance(input_event, events.Key):
-            return input_event.key in {"backspace", "delete"}
-        if isinstance(input_event, events.MouseEvent):
-            button = getattr(input_event, "button", None)
-            if hasattr(button, "name"):
-                return button.name.lower() in {"right", "secondary"}
-            return str(button).lower() in {"right", "secondary"}
-        return False
 
     def _library_list(self) -> OptionList:
         return self.query_one("#library-list", OptionList)
