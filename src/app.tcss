@@ -126,4 +126,10 @@ Screen {
 
 #instrument-panel {
     margin-top: 1;
+    height: 1fr;
+    layout: vertical;
+}
+
+#instrument-panel > OptionList {
+    height: 1fr;
 }
