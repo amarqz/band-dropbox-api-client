@@ -4,77 +4,22 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
-from typing import NamedTuple
 
-from rich.text import Text
-from textual import events
 from textual.app import App, ComposeResult
-from textual.command import DiscoveryHit, Hit, Provider
-from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
-from textual.widgets import (
-    Button,
-    Footer,
-    Header,
-    Input,
-    LoadingIndicator,
-    OptionList,
-    Static,
-)
+from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
-from .client.dropbox_client import DropboxClient
+from .actions import ActionHistory, InstrumentAction, SelectionAction
 from .config import APP_CONFIG, AppConfig, DBX_CONFIG
-from .util import contains_any_substring, strip_suffix
-
-
-class SelectionAction(NamedTuple):
-    """Represents a library selection toggle that can be undone."""
-
-    entry: str
-    previous_state: bool
-
-
-class InstrumentAction(NamedTuple):
-    """Represents an instrument count adjustment."""
-
-    entry: str
-    delta: int
-
-
-Action = SelectionAction | InstrumentAction
-
-
-class StartCommandProvider(Provider):
-    """Expose the start action through Textual's command palette."""
-
-    _COMMAND_LABEL = "Start action"
-
-    async def search(self, query: str):
-        """Return hits for palette searches."""
-        matcher = self.matcher(query)
-        score = matcher.match(self._COMMAND_LABEL)
-        if score:
-            yield Hit(
-                score,
-                matcher.highlight(self._COMMAND_LABEL),
-                self._trigger_start,
-                text=self._COMMAND_LABEL,
-                help="Trigger the Start action for the detail panel.",
-            )
-
-    async def discover(self):
-        """Provide a default hit when the palette opens."""
-        yield DiscoveryHit(
-            self._COMMAND_LABEL,
-            self._trigger_start,
-            text=self._COMMAND_LABEL,
-            help="Trigger the Start action for the detail panel.",
-        )
-
-    def _trigger_start(self) -> None:
-        """Invoke the application's start action."""
-        self.app.action_start_detail_action()
+from .controllers.instruments import InstrumentController
+from .controllers.library import LibraryController
+from .services.startup import load_initial_data
+from .ui.commands import StartCommandProvider
+from .ui.detail_panel import build_detail_panel_content
+from .ui.event_handlers import InstrumentEventHandler, LibraryEventHandler
+from .ui.layout import compose_layout
+from .util import strip_suffix
 
 
 class BandDropboxApp(App[None]):
@@ -94,129 +39,36 @@ class BandDropboxApp(App[None]):
     is_loading = reactive(True)
 
     def __init__(self, *, app_config: AppConfig | None = None, **kwargs) -> None:
-        """Allow injecting configuration, defaulting to the on-disk settings."""
         super().__init__(**kwargs)
         self.app_config = app_config or APP_CONFIG
-        self._dbx_client: DropboxClient | None = None
+        self.library_controller = LibraryController(self.app_config.library_placeholder)
+        self.instrument_controller = InstrumentController(
+            placeholder=self.app_config.instruments_placeholder,
+            empty_message=self.app_config.instruments_empty_message,
+            suffix=self.app_config.instruments_suffix,
+            exclude_substrings=InstrumentController.parse_exclusions(
+                self.app_config.instruments_exclude_substrings
+            ),
+        )
+        self.history = ActionHistory()
         self._startup_task: asyncio.Task[None] | None = None
-        self._library_entries: list[str] = []
-        self._filtered_library_entries: list[str] = []
-        self._library_filter_text: str = ""
-        self._selected_entries: set[str] = set()
-        self._highlight_index: int = 0
-        self._instrument_entries: list[str] = []
-        self._instrument_counts: dict[str, int] = {}
-        self._instrument_highlight_index: int = 0
-        self._action_history: list[Action] = []
         self._start_task: asyncio.Task[None] | None = None
+        self.library_events = LibraryEventHandler(
+            controller=self.library_controller,
+            history=self.history,
+            get_option_list=self._library_list,
+            refresh_detail=lambda: self._update_detail_panel(),
+        )
+        self.instrument_events = InstrumentEventHandler(
+            controller=self.instrument_controller,
+            history=self.history,
+            get_option_list=self._instrument_list,
+            refresh_detail=lambda: self._update_detail_panel(),
+        )
 
     def compose(self) -> ComposeResult:
         """Compose the initial widget tree."""
-        yield Container(
-            Static(self.app_config.title, classes="loading__title"),
-            LoadingIndicator(id="loading__spinner"),
-            Static(self.app_config.loading_message, classes="loading__subtitle"),
-            id="loading-view",
-        )
-
-        yield Container(
-            Header(show_clock=True),
-            Horizontal(
-                Container(
-                    Static(self.app_config.library_title, classes="panel__title"),
-                    Vertical(
-                        OptionList(
-                            Option(self.app_config.library_placeholder, disabled=True),
-                            classes="panel__body",
-                            id="library-list",
-                        ),
-                        Input(
-                            placeholder="Filter items...",
-                            id="library-filter",
-                        ),
-                        classes="library__body",
-                    ),
-                    classes="panel",
-                    id="library-panel",
-                ),
-                Vertical(
-                Container(
-                    Static(self.app_config.detail_title, classes="panel__title"),
-                    Vertical(
-                        VerticalScroll(
-                            Horizontal(
-                                Container(
-                                    Static(
-                                        "Selected items (0)",
-                                        classes="detail__header",
-                                        id="detail-library-title",
-                                    ),
-                                    VerticalScroll(
-                                        Static(
-                                            self.app_config.detail_library_placeholder,
-                                            classes="panel__body detail__content",
-                                            id="detail-library",
-                                        ),
-                                        classes="detail__section",
-                                    ),
-                                    classes="detail__column",
-                                ),
-                                Container(
-                                    Static(
-                                        "Instrument counts (0)",
-                                        classes="detail__header",
-                                        id="detail-instruments-title",
-                                    ),
-                                    VerticalScroll(
-                                        Static(
-                                            self.app_config.detail_instruments_placeholder,
-                                            classes="panel__body detail__content",
-                                            id="detail-instruments",
-                                        ),
-                                        classes="detail__section",
-                                    ),
-                                    classes="detail__column",
-                                ),
-                                id="detail-content",
-                            ),
-                            classes="detail__scroll",
-                        ),
-                        Horizontal(
-                            Button(
-                                "Undo",
-                                id="detail-action-undo",
-                            ),
-                            Button(
-                                "Clear",
-                                id="detail-action-clear",
-                            ),
-                            Button(
-                                "Start",
-                                id="detail-action-start",
-                            ),
-                            classes="detail__actions",
-                        ),
-                        id="detail-body",
-                    ),
-                    classes="panel",
-                    id="detail-panel",
-                ),
-                    Container(
-                        Static(self.app_config.instruments_title, classes="panel__title"),
-                        OptionList(
-                            Option(self.app_config.instruments_placeholder, disabled=True),
-                            classes="panel__body",
-                            id="instrument-list",
-                        ),
-                        classes="panel",
-                        id="instrument-panel",
-                    ),
-                ),
-                id="main-panels",
-            ),
-            Footer(),
-            id="main-view",
-        )
+        yield from compose_layout(self.app_config)
 
     def watch_is_loading(self, loading: bool) -> None:
         """Toggle visibility between the splash screen and the main layout."""
@@ -235,91 +87,46 @@ class BandDropboxApp(App[None]):
                 await self._startup_task
 
     async def _startup(self) -> None:
-        """Start the application by connecting to Dropbox and loading initial data."""
-        try:
-            self._dbx_client = await asyncio.to_thread(DropboxClient, DBX_CONFIG)
-        except Exception as exc:
-            message = str(exc)
-            self._on_library_error(message)
-            self._on_instruments_error(message)
-            return
+        """Start the application by connecting to Dropbox and loading data."""
+        result = await load_initial_data(self.app_config, DBX_CONFIG)
 
-        tasks = [
-            asyncio.to_thread(
-                self._dbx_client.list_contents,
-                self.app_config.library_path,
-            )
-        ]
-
-        instrument_path = self.app_config.instruments_path
-        instrument_task_index: int | None = None
-        if instrument_path is not None:
-            normalized_instruments_path = instrument_path.strip()
-            instrument_task_index = len(tasks)
-            tasks.append(
-                asyncio.to_thread(
-                    self._dbx_client.list_contents,
-                    normalized_instruments_path,
-                )
-            )
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        library_result = results[0]
-        instruments_result = (
-            results[instrument_task_index]
-            if instrument_task_index is not None and instrument_task_index < len(results)
-            else None
-        )
-
-        if isinstance(library_result, Exception):
-            self._on_library_error(str(library_result))
-        else:
-            library_entries = list(library_result)
-            if self.app_config.library_suffix:
-                library_entries = [
-                    strip_suffix(entry, self.app_config.library_suffix)
-                    for entry in library_entries
-                ]
+        if result.library_entries is not None:
+            library_entries = self._prepare_library_entries(result.library_entries)
             self._on_library_loaded(library_entries)
+        else:
+            message = result.library_error or "Unable to load Dropbox contents."
+            self._on_library_error(message)
 
-        if instrument_task_index is not None:
-            if isinstance(instruments_result, Exception):
-                self._on_instruments_error(str(instruments_result))
-            elif instruments_result is not None:
-                instruments_entries = self._process_instrument_entries(
-                    list(instruments_result)
-                )
-                self._on_instruments_loaded(instruments_entries)
-            else:
-                self._on_instruments_loaded([])
+        if result.instrument_entries is not None:
+            self._on_instruments_loaded(result.instrument_entries)
+        elif result.instrument_error:
+            self._on_instruments_error(result.instrument_error)
+        else:
+            self._on_instruments_loaded([])
+
+    def _prepare_library_entries(self, entries: list[str]) -> list[str]:
+        suffix = self.app_config.library_suffix
+        if not suffix:
+            return list(entries)
+        return [strip_suffix(entry, suffix) for entry in entries]
 
     def _on_library_loaded(self, contents: list[str]) -> None:
         """Render the fetched Dropbox contents in the library panel."""
         self.is_loading = False
-        self._library_entries = contents
-        self._filtered_library_entries = list(contents)
-        self._selected_entries.clear()
-        self._highlight_index = 0
-        self._action_history.clear()
-        if not self._library_filter_text:
-            self._refresh_library_options()
-        else:
-            self._apply_library_filter()
+        self.history.clear()
+        self.library_controller.load_entries(contents)
+        self.library_events.refresh_options()
         self._update_detail_panel()
 
     def _on_library_error(self, message: str) -> None:
         """Display error information when Dropbox calls fail."""
         self.is_loading = False
-        self._library_entries = []
-        self._filtered_library_entries = []
-        self._library_filter_text = ""
-        self._selected_entries.clear()
-        self._highlight_index = 0
-        self._action_history.clear()
+        self.history.clear()
+        self.library_controller.load_entries([])
+        self.library_controller.clear_filter()
         with suppress(LookupError):
             self.query_one("#library-filter", Input).value = ""
-        library_list = self.query_one("#library-list", OptionList)
+        library_list = self._library_list()
         library_list.clear_options()
         library_list.add_option(
             Option(
@@ -332,22 +139,16 @@ class BandDropboxApp(App[None]):
 
     def _on_instruments_loaded(self, entries: list[str]) -> None:
         """Render the fetched instruments in the instruments panel."""
-        self._instrument_entries = entries
-        self._instrument_counts = {
-            entry: self._instrument_counts.get(entry, 0) for entry in entries
-        }
-        self._instrument_highlight_index = 0
-        self._action_history.clear()
-        self._refresh_instrument_options()
+        self.history.clear()
+        self.instrument_controller.load_entries(entries)
+        self.instrument_events.refresh_options()
         self._update_detail_panel()
 
     def _on_instruments_error(self, message: str) -> None:
         """Display error information when instrument loading fails."""
-        self._instrument_entries = []
-        self._instrument_counts.clear()
-        self._instrument_highlight_index = 0
-        self._action_history.clear()
-        instrument_list = self.query_one("#instrument-list", OptionList)
+        self.history.clear()
+        self.instrument_controller.load_entries([])
+        instrument_list = self._instrument_list()
         instrument_list.clear_options()
         instrument_list.add_option(
             Option(f"Unable to load instruments:\n{message}", disabled=True)
@@ -360,169 +161,20 @@ class BandDropboxApp(App[None]):
         event: OptionList.OptionSelected,
     ) -> None:
         """Handle option selections for library and instrument lists."""
-        option_list = event.option_list
-        list_id = option_list.id or ""
-        if event.option.disabled:
+        if self.library_events.handle_option_selected(event):
+            return
+        if self.instrument_events.handle_option_selected(event):
             return
 
-        index = self._option_index(event.option)
-        if index is None:
+    def on_option_list_option_highlighted(
+        self,
+        event: OptionList.OptionHighlighted,
+    ) -> None:
+        """Track the highlighted index so the cursor doesn't jump on refresh."""
+        if self.library_events.handle_option_highlighted(event):
             return
-
-        if list_id == "library-list":
-            if not 0 <= index < len(self._filtered_library_entries):
-                return
-
-            entry = self._filtered_library_entries[index]
-            self._highlight_index = index
-            self._toggle_library_entry(entry)
+        if self.instrument_events.handle_option_highlighted(event):
             return
-
-        if list_id == "instrument-list":
-            if not 0 <= index < len(self._instrument_entries):
-                return
-
-            entry = self._instrument_entries[index]
-            self._instrument_highlight_index = index
-
-            input_event = getattr(event, "input_event", None)
-            delta = -1 if self._is_decrement_event(input_event) else 1
-            self._adjust_instrument_count(entry, delta)
-            return
-
-    def _refresh_library_options(self) -> None:
-        """Render library options with selection markers, keeping focus where possible."""
-        library_list = self.query_one("#library-list", OptionList)
-        library_list.clear_options()
-
-        if not self._filtered_library_entries:
-            if self._library_entries and self._library_filter_text:
-                message = "No entries match the filter."
-            else:
-                message = "This folder is empty."
-            library_list.add_option(Option(message, disabled=True))
-            self._highlight_index = 0
-            return
-
-        target_index = min(self._highlight_index, len(self._filtered_library_entries) - 1)
-
-        for index, entry in enumerate(self._filtered_library_entries):
-            marker = "[x]" if entry in self._selected_entries else "[ ]"
-            prompt = Text.assemble(marker, " ", entry)
-            library_list.add_option(
-                Option(prompt, id=f"entry-{index}")
-            )
-
-        moved = False
-        if hasattr(library_list, "index"):
-            try:
-                library_list.index = target_index  # type: ignore[attr-defined]
-                moved = True
-            except Exception:  # pragma: no cover - defensive
-                moved = False
-
-        if not moved and hasattr(library_list, "action_cursor_down"):
-            for _ in range(target_index + 1):
-                try:
-                    library_list.action_cursor_down()  # type: ignore[attr-defined]
-                except Exception:  # pragma: no cover - defensive
-                    break
-
-        self._highlight_index = target_index
-
-    def _apply_library_filter(self) -> None:
-        """Filter visible library entries based on input text."""
-        query = self._library_filter_text.strip().lower()
-        if not query:
-            self._filtered_library_entries = list(self._library_entries)
-        else:
-            self._filtered_library_entries = [
-                entry for entry in self._library_entries if query in entry.lower()
-            ]
-        self._highlight_index = 0
-        self._refresh_library_options()
-
-    def _refresh_instrument_options(self) -> None:
-        """Render instrument options with counts while keeping focus."""
-        instrument_list = self.query_one("#instrument-list", OptionList)
-        instrument_list.clear_options()
-
-        if not self._instrument_entries:
-            instrument_list.add_option(
-                Option(self.app_config.instruments_empty_message, disabled=True)
-            )
-            self._instrument_highlight_index = 0
-            return
-
-        target_index = min(
-            self._instrument_highlight_index, len(self._instrument_entries) - 1
-        )
-
-        for index, entry in enumerate(self._instrument_entries):
-            count = self._instrument_counts.get(entry, 0)
-            prompt = Text.assemble(f"[{count}] ", entry)
-            instrument_list.add_option(
-                Option(prompt, id=f"instrument-{index}")
-            )
-
-        moved = False
-        if hasattr(instrument_list, "index"):
-            try:
-                instrument_list.index = target_index  # type: ignore[attr-defined]
-                moved = True
-            except Exception:  # pragma: no cover - defensive
-                moved = False
-
-        if not moved and hasattr(instrument_list, "action_cursor_down"):
-            for _ in range(target_index + 1):
-                try:
-                    instrument_list.action_cursor_down()  # type: ignore[attr-defined]
-                except Exception:  # pragma: no cover - defensive
-                    break
-
-        self._instrument_highlight_index = target_index
-
-    def _update_detail_panel(self, *, error: bool = False) -> None:
-        """Refresh the detail panel content based on current selection state."""
-        detail_library = self.query_one("#detail-library", Static)
-        detail_instruments = self.query_one("#detail-instruments", Static)
-        detail_library_title = self.query_one("#detail-library-title", Static)
-        detail_instruments_title = self.query_one("#detail-instruments-title", Static)
-
-        if error:
-            detail_library.update("Unable to show details.")
-            detail_instruments.update("Unable to show details.")
-            detail_library_title.update("Selected items (0)")
-            detail_instruments_title.update("Instrument counts (0)")
-            return
-
-        selected_count = len(self._selected_entries)
-        detail_library_title.update(f"Selected items ({selected_count})")
-        if selected_count:
-            library_lines = "\n".join(sorted(self._selected_entries, key=str.lower))
-            detail_library.update(library_lines)
-        else:
-            detail_library.update(self.app_config.detail_library_placeholder)
-
-        instrument_section = ""
-        counted_instruments = [
-            (entry, count)
-            for entry, count in sorted(
-                self._instrument_counts.items(), key=lambda item: item[0].lower()
-            )
-            if count > 0
-        ]
-        detail_instruments_title.update(
-            f"Instrument counts ({len(counted_instruments)})"
-        )
-        if counted_instruments:
-            instrument_section = "\n".join(
-                f"{entry}: {count}" for entry, count in counted_instruments
-            )
-        else:
-            instrument_section = self.app_config.detail_instruments_placeholder
-
-        detail_instruments.update(instrument_section)
 
     def action_toggle_option(self) -> None:
         """Toggle the selection state for the focused library entry."""
@@ -549,62 +201,12 @@ class BandDropboxApp(App[None]):
             filter_input = self.query_one("#library-filter", Input)
             filter_input.value = ""
             filter_input.focus()
-        self._library_filter_text = ""
-        self._apply_library_filter()
-
-    def on_key(self, event: events.Key) -> None:
-        """Handle global key presses for manual adjustments."""
-        if event.key in {"delete", "backspace"}:
-            focused = self.focused
-            if isinstance(focused, OptionList) and focused.id == "instrument-list":
-                index = getattr(focused, "index", None)
-                if isinstance(index, int) and 0 <= index < len(self._instrument_entries):
-                    entry = self._instrument_entries[index]
-                    self._instrument_highlight_index = index
-                    self._adjust_instrument_count(entry, -1)
-                    event.stop()
-                    return
-        handler = getattr(super(), "on_key", None)
-        if handler:
-            handler(event)
-
-    def on_mouse_down(self, event: events.MouseDown) -> None:
-        """Handle right clicks on the instrument list to decrement counts."""
-        button = getattr(event, "button", None)
-        button_name = getattr(button, "name", str(button) if button is not None else "")
-        if str(button_name).lower() in {"right", "secondary"}:
-            instrument_list = self.query_one("#instrument-list", OptionList)
-            path = getattr(event, "path", [])
-            if instrument_list in path:
-                index = getattr(instrument_list, "index", None)
-                if isinstance(index, int) and 0 <= index < len(self._instrument_entries):
-                    entry = self._instrument_entries[index]
-                    self._instrument_highlight_index = index
-                    self._adjust_instrument_count(entry, -1)
-                    event.stop()
-                    return
-        handler = getattr(super(), "on_mouse_down", None)
-        if handler:
-            handler(event)
-
-    def on_option_list_option_highlighted(
-        self,
-        event: OptionList.OptionHighlighted,
-    ) -> None:
-        """Track the highlighted index so the cursor doesn't jump on refresh."""
-        index = self._option_index(event.option)
-        if index is not None:
-            option_list = event.option_list
-            if option_list.id == "library-list":
-                self._highlight_index = index
-            elif option_list.id == "instrument-list":
-                self._instrument_highlight_index = index
+        self.library_events.clear_filter()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Apply the library filter as the user types."""
         if event.input.id == "library-filter":
-            self._library_filter_text = event.value
-            self._apply_library_filter()
+            self.library_events.handle_filter_changed(event.value)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle control button clicks below the detail panel."""
@@ -618,76 +220,28 @@ class BandDropboxApp(App[None]):
         if button_id == "detail-action-start":
             self._handle_start_button(event.button)
 
-    def _toggle_library_entry(self, entry: str, *, record_history: bool = True) -> None:
-        """Toggle a single library entry selection and record the change."""
-        was_selected = entry in self._selected_entries
-        new_state = not was_selected
-        if new_state:
-            self._selected_entries.add(entry)
-        else:
-            self._selected_entries.discard(entry)
-        if record_history:
-            self._action_history.append(SelectionAction(entry, was_selected))
-        self._refresh_library_options()
-        self._update_detail_panel()
-
-    def _restore_selection(self, entry: str, previous_state: bool) -> None:
-        """Restore a library entry to a prior selection state."""
-        if previous_state:
-            self._selected_entries.add(entry)
-        else:
-            self._selected_entries.discard(entry)
-        self._refresh_library_options()
-        self._update_detail_panel()
-
-    def _adjust_instrument_count(
-        self,
-        entry: str,
-        delta: int,
-        *,
-        record_history: bool = True,
-    ) -> None:
-        """Adjust the selection count for an instrument entry."""
-        if delta == 0:
-            return
-        current = self._instrument_counts.get(entry, 0)
-        new_value = max(0, current + delta)
-        if new_value == current:
-            return
-        applied_delta = new_value - current
-        self._instrument_counts[entry] = new_value
-        if record_history:
-            self._action_history.append(InstrumentAction(entry, applied_delta))
-        self._refresh_instrument_options()
-        self._update_detail_panel()
-
     def _undo_last_action(self) -> None:
         """Revert the most recent selection or instrument adjustment."""
-        if not self._action_history:
+        action = self.history.pop()
+        if not action:
             return
-        action = self._action_history.pop()
         if isinstance(action, SelectionAction):
-            self._restore_selection(action.entry, action.previous_state)
-            return
-        if isinstance(action, InstrumentAction):
-            self._adjust_instrument_count(
-                action.entry,
-                -action.delta,
-                record_history=False,
-            )
+            self.library_controller.restore_selection(action.entry, action.previous_state)
+            self.library_events.refresh_options()
+        elif isinstance(action, InstrumentAction):
+            self.instrument_controller.adjust_count(action.entry, -action.delta)
+            self.instrument_events.refresh_options()
+        self._update_detail_panel()
 
     def _clear_all_selections(self) -> None:
         """Reset both the selected entries and instrument counts."""
-        has_library_selection = bool(self._selected_entries)
-        has_instruments = any(count > 0 for count in self._instrument_counts.values())
-        if not has_library_selection and not has_instruments:
+        cleared_library = self.library_controller.clear_selections()
+        cleared_instruments = self.instrument_controller.clear_counts()
+        if not cleared_library and not cleared_instruments:
             return
-        self._selected_entries.clear()
-        for entry in list(self._instrument_counts.keys()):
-            self._instrument_counts[entry] = 0
-        self._action_history.clear()
-        self._refresh_library_options()
-        self._refresh_instrument_options()
+        self.history.clear()
+        self.library_events.refresh_options()
+        self.instrument_events.refresh_options()
         self._update_detail_panel()
 
     def _handle_start_button(self, button: Button) -> None:
@@ -706,60 +260,28 @@ class BandDropboxApp(App[None]):
             button.label = "Start"
             self._start_task = None
 
-    @staticmethod
-    def _is_decrement_event(input_event: events.Event | None) -> bool:
-        """Return True if the originating input should decrement a count."""
-        if input_event is None:
-            return False
-        if isinstance(input_event, events.Key):
-            return input_event.key in {"backspace", "delete"}
-        if isinstance(input_event, events.MouseEvent):
-            button = getattr(input_event, "button", None)
-            if hasattr(button, "name"):
-                return button.name.lower() in {"right", "secondary"}
-            return str(button).lower() in {"right", "secondary"}
-        return False
+    def _update_detail_panel(self, *, error: bool = False) -> None:
+        detail_library = self.query_one("#detail-library", Static)
+        detail_instruments = self.query_one("#detail-instruments", Static)
+        detail_library_title = self.query_one("#detail-library-title", Static)
+        detail_instruments_title = self.query_one("#detail-instruments-title", Static)
 
-    @staticmethod
-    def _option_index(option: Option) -> int | None:
-        """Return the integer index encoded in an option id, if available."""
-        option_id = option.id
-        if not option_id:
-            return None
-        try:
-            _, index_text = option_id.rsplit("-", 1)
-            index = int(index_text)
-        except (ValueError, AttributeError):
-            return None
-        return index if index >= 0 else None
+        content = build_detail_panel_content(
+            self.app_config,
+            self.library_controller.selected_entries,
+            self.instrument_controller.counts,
+            error=error,
+        )
+        detail_library_title.update(content.library_title)
+        detail_library.update(content.library_body)
+        detail_instruments_title.update(content.instruments_title)
+        detail_instruments.update(content.instruments_body)
 
-    def _process_instrument_entries(self, entries: list[str]) -> list[str]:
-        """Return processed instrument entries ready for display."""
-        suffix = self.app_config.instruments_suffix
-        exclusions = self._instrument_exclusions()
+    def _library_list(self) -> OptionList:
+        return self.query_one("#library-list", OptionList)
 
-        processed: list[str] = []
-        for entry in entries:
-            display = self._strip_type_indicator(entry)
-            display = strip_suffix(display, suffix)
-            if exclusions and contains_any_substring(display, exclusions):
-                continue
-            processed.append(display)
-
-        return sorted(processed, key=str.lower)
-
-    @staticmethod
-    def _strip_type_indicator(entry: str) -> str:
-        """Remove the Dropbox type indicator prefix when present."""
-        if entry.startswith("[") and "] " in entry:
-            return entry.split("] ", 1)[1]
-        return entry
-
-    def _instrument_exclusions(self) -> tuple[str, ...]:
-        """Return configured instrument substrings to exclude."""
-        raw = self.app_config.instruments_exclude_substrings or ""
-        parts = (part.strip() for part in raw.split(","))
-        return tuple(part for part in parts if part)
+    def _instrument_list(self) -> OptionList:
+        return self.query_one("#instrument-list", OptionList)
 
 
 if __name__ == "__main__":
