@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from textual import events
 from textual.widgets import OptionList
 
 from ..actions import ActionHistory
@@ -91,8 +90,7 @@ class InstrumentEventHandler:
         index = option_index(event.option)
         if index is None:
             return False
-        delta = -1 if self._is_decrement_event(getattr(event, "input_event", None)) else 1
-        return self._apply_delta_for_index(index, delta, event.option_list)
+        return self._apply_delta_for_index(index, 1, event.option_list)
 
     def handle_option_highlighted(
         self,
@@ -105,28 +103,6 @@ class InstrumentEventHandler:
             return False
         self._controller.set_highlight(index)
         return True
-
-    def handle_keyboard_decrement(self, focused: OptionList | None) -> bool:
-        if not isinstance(focused, OptionList) or focused.id != "instrument-list":
-            return False
-        index = getattr(focused, "index", None)
-        if not isinstance(index, int):
-            return False
-        return self._apply_delta_for_index(index, -1, focused)
-
-    def handle_mouse_decrement(self, event: events.MouseDown) -> bool:
-        button = getattr(event, "button", None)
-        button_name = getattr(button, "name", str(button) if button is not None else "")
-        if str(button_name).lower() not in {"right", "secondary"}:
-            return False
-        instrument_list = self._get_option_list()
-        path = getattr(event, "path", [])
-        if instrument_list not in path:
-            return False
-        index = getattr(instrument_list, "index", None)
-        if not isinstance(index, int):
-            return False
-        return self._apply_delta_for_index(index, -1, instrument_list)
 
     def refresh_options(self) -> None:
         self._controller.refresh_options(self._get_option_list())
@@ -148,16 +124,3 @@ class InstrumentEventHandler:
         self._controller.refresh_options(option_list)
         self._refresh_detail()
         return True
-
-    @staticmethod
-    def _is_decrement_event(input_event: events.Event | None) -> bool:
-        if input_event is None:
-            return False
-        if isinstance(input_event, events.Key):
-            return input_event.key in {"backspace", "delete"}
-        if isinstance(input_event, events.MouseEvent):
-            button = getattr(input_event, "button", None)
-            if hasattr(button, "name"):
-                return button.name.lower() in {"right", "secondary"}
-            return str(button).lower() in {"right", "secondary"}
-        return False

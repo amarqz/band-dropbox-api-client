@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 
-from textual import events
 from textual.app import App, ComposeResult
 from textual.reactive import reactive
 from textual.widgets import Button, Input, OptionList, Static
@@ -220,28 +219,6 @@ class BandDropboxApp(App[None]):
             return
         if button_id == "detail-action-start":
             self._handle_start_button(event.button)
-
-    def on_key(self, event: events.Key) -> None:
-        """Handle global key presses for manual adjustments."""
-        if event.key in {"delete", "backspace"}:
-            focused = self.focused
-            if self.instrument_events.handle_keyboard_decrement(
-                focused if isinstance(focused, OptionList) else None
-            ):
-                event.stop()
-                return
-        handler = getattr(super(), "on_key", None)
-        if handler:
-            handler(event)
-
-    def on_mouse_down(self, event: events.MouseDown) -> None:
-        """Handle right clicks on the instrument list to decrement counts."""
-        if self.instrument_events.handle_mouse_decrement(event):
-            event.stop()
-            return
-        handler = getattr(super(), "on_mouse_down", None)
-        if handler:
-            handler(event)
 
     def _undo_last_action(self) -> None:
         """Revert the most recent selection or instrument adjustment."""
