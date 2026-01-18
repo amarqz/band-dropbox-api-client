@@ -94,13 +94,23 @@ class InstrumentController:
         processed: list[str] = []
         for entry in entries:
             display = self._strip_type_indicator(entry)
-            display = strip_suffix(display, self.suffix)
+            display = self._strip_instrument_suffix(display)
             if self.exclude_substrings and contains_any_substring(
                 display, self.exclude_substrings
             ):
                 continue
             processed.append(display)
         return sorted(processed, key=str.lower)
+
+    def _strip_instrument_suffix(self, entry: str) -> str:
+        if not self.suffix:
+            return entry
+        if " / " in entry:
+            instrument, voice = entry.split(" / ", 1)
+            instrument = strip_suffix(instrument, self.suffix)
+            voice = strip_suffix(voice, self.suffix)
+            return f"{instrument} / {voice}"
+        return strip_suffix(entry, self.suffix)
 
     @staticmethod
     def _strip_type_indicator(entry: str) -> str:

@@ -45,7 +45,7 @@ async def load_initial_data(
     instrument_path = app_config.instruments_path
     if instrument_path:
         instrument_task_index = len(tasks)
-        tasks.append(asyncio.to_thread(client.list_contents, instrument_path.strip()))
+        tasks.append(asyncio.to_thread(client.list_instrument_voices, instrument_path.strip()))
 
     responses = await asyncio.gather(*tasks, return_exceptions=True)
 
