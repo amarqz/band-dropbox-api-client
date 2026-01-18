@@ -93,6 +93,9 @@ class AppConfig(BaseConfig):
     instruments_title: str = "Instruments"
     instruments_placeholder: str = "Instrument folders will appear here once loaded."
     instruments_empty_message: str = "No instruments found."
+    start_selection_required_message: str = (
+        "Select at least one title and one instrument before starting."
+    )
     instruments_path: str = ""
     instruments_suffix: str | None = None
     instruments_exclude_substrings: str = ""

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.reactive import reactive
@@ -14,7 +15,10 @@ from .actions import ActionHistory, InstrumentAction, SelectionAction
 from .config import APP_CONFIG, AppConfig, DBX_CONFIG
 from .controllers.instruments import InstrumentController
 from .controllers.library import LibraryController
+from .client.dropbox_client import DropboxClient
+from .services.downloads import InstrumentSelection, download_selected_pdfs
 from .services.startup import load_initial_data
+from .ui.download_screen import DownloadScreen
 from .ui.commands import StartCommandProvider
 from .ui.detail_panel import build_detail_panel_content
 from .ui.event_handlers import InstrumentEventHandler, LibraryEventHandler
@@ -251,11 +255,67 @@ class BandDropboxApp(App[None]):
         self._start_task = asyncio.create_task(self._run_start_sequence(button))
 
     async def _run_start_sequence(self, button: Button) -> None:
-        """Simulate a short async operation by counting to three."""
-        button.label = "In progress..."
+        """Download selected PDFs for chosen titles and instruments."""
+        button.label = "Downloading..."
         try:
-            for _ in range(3):
-                await asyncio.sleep(1)
+            selected_titles = sorted(self.library_controller.selected_entries, key=str.lower)
+            selected_instruments = [
+                InstrumentSelection(
+                    display=entry,
+                    raw=self.instrument_controller.raw_entry_for_display(entry),
+                )
+                for entry, count in self.instrument_controller.counts.items()
+                if count > 0
+            ]
+            if not selected_titles or not selected_instruments:
+                self.notify(
+                    self.app_config.start_selection_required_message,
+                    severity="error",
+                )
+                return
+            if not self.app_config.instruments_path:
+                self.log.error("Instruments path is not configured.")
+                return
+
+            total_steps = len(selected_titles) * len(selected_instruments)
+            download_screen = DownloadScreen()
+            self.push_screen(download_screen)
+            download_screen.reset(total_steps)
+
+            try:
+                client = await asyncio.to_thread(DropboxClient, DBX_CONFIG)
+            except Exception as exc:
+                self.log.error(f"Dropbox connection failed: {exc}")
+                return
+
+            def progress_callback(completed: int, total: int) -> None:
+                self.call_from_thread(download_screen.update_progress, completed, total)
+
+            def log_callback(message: str) -> None:
+                self.call_from_thread(download_screen.append_log, message)
+
+            summary = await asyncio.to_thread(
+                download_selected_pdfs,
+                client,
+                titles=selected_titles,
+                instruments=selected_instruments,
+                instruments_path=self.app_config.instruments_path,
+                download_root=Path("download"),
+                progress_callback=progress_callback,
+                log_callback=log_callback,
+            )
+            self.log.info(
+                "Downloads complete. "
+                f"Downloaded: {len(summary.downloaded)}, "
+                f"Skipped: {len(summary.skipped)}, "
+                f"Missing: {len(summary.missing)}."
+            )
+            download_screen.append_log(
+                "Complete. "
+                f"Downloaded: {len(summary.downloaded)}, "
+                f"Skipped: {len(summary.skipped)}, "
+                f"Missing: {len(summary.missing)}."
+            )
         finally:
             button.label = "Start"
             self._start_task = None

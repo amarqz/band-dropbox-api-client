@@ -2,6 +2,10 @@ Screen {
     background: $surface;
 }
 
+DownloadScreen {
+    align: center middle;
+}
+
 #loading-view {
     layout: vertical;
     height: 100%;
@@ -132,4 +136,30 @@ Screen {
 
 #instrument-panel > OptionList {
     height: 1fr;
+}
+
+#download-modal {
+    border: tall $accent;
+    background: $surface-darken-1;
+    padding: 1 2;
+    width: 80%;
+    height: 80%;
+}
+
+#download-progress {
+    margin-top: 1;
+}
+
+#download-log {
+    height: 1fr;
+    margin-top: 1;
+}
+
+#download-actions {
+    margin-top: 1;
+    layout: horizontal;
+}
+
+#download-actions Button {
+    width: 1fr;
 }

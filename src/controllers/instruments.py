@@ -20,12 +20,14 @@ class InstrumentController:
     suffix: str | None = None
     exclude_substrings: tuple[str, ...] = field(default_factory=tuple)
     _entries: list[str] = field(default_factory=list)
+    _entry_map: dict[str, str] = field(default_factory=dict)
     _counts: dict[str, int] = field(default_factory=dict)
     _highlight_index: int = 0
 
     def load_entries(self, entries: list[str]) -> None:
-        processed = self._process_entries(entries)
+        processed, entry_map = self._process_entries(entries)
         self._entries = processed
+        self._entry_map = entry_map
         self._counts = {entry: self._counts.get(entry, 0) for entry in processed}
         self._highlight_index = 0
 
@@ -37,6 +39,9 @@ class InstrumentController:
     @property
     def entries(self) -> list[str]:
         return self._entries
+
+    def raw_entry_for_display(self, entry: str) -> str:
+        return self._entry_map.get(entry, entry)
 
     @property
     def counts(self) -> dict[str, int]:
@@ -90,17 +95,30 @@ class InstrumentController:
         focus_option(option_list, target_index)
         self._highlight_index = target_index
 
-    def _process_entries(self, entries: list[str]) -> list[str]:
+    def _process_entries(self, entries: list[str]) -> tuple[list[str], dict[str, str]]:
         processed: list[str] = []
+        entry_map: dict[str, str] = {}
         for entry in entries:
-            display = self._strip_type_indicator(entry)
-            display = strip_suffix(display, self.suffix)
+            raw_entry = self._strip_type_indicator(entry)
+            display = self._strip_instrument_suffix(raw_entry)
             if self.exclude_substrings and contains_any_substring(
                 display, self.exclude_substrings
             ):
                 continue
-            processed.append(display)
-        return sorted(processed, key=str.lower)
+            if display not in entry_map:
+                entry_map[display] = raw_entry
+                processed.append(display)
+        return sorted(processed, key=str.lower), entry_map
+
+    def _strip_instrument_suffix(self, entry: str) -> str:
+        if not self.suffix:
+            return entry
+        if " / " in entry:
+            instrument, voice = entry.split(" / ", 1)
+            instrument = strip_suffix(instrument, self.suffix)
+            voice = strip_suffix(voice, self.suffix)
+            return f"{instrument} / {voice}"
+        return strip_suffix(entry, self.suffix)
 
     @staticmethod
     def _strip_type_indicator(entry: str) -> str:

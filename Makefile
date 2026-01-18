@@ -2,13 +2,16 @@
 
 sync:
 	uv sync
-	@echo Activate the virtual environment: source .venv/bin/activate.fish
+	@echo Activate the virtual environment: source .venv/bin/activate
 
 dev:
 	uv sync --extra dev
 
 load-environment:
-	@echo Activate the virtual environment: source .venv/bin/activate.fish
+	@echo Activate the virtual environment: source .venv/bin/activate
+
+run:
+	uv run python -m src.app
 
 test:
 	uv run python -m unittest discover -s tests
