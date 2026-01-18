@@ -267,7 +267,10 @@ class BandDropboxApp(App[None]):
                 if count > 0
             ]
             if not selected_titles or not selected_instruments:
-                self.log.info("No selections available for download.")
+                self.notify(
+                    self.app_config.start_selection_required_message,
+                    severity="error",
+                )
                 return
             if not self.app_config.instruments_path:
                 self.log.error("Instruments path is not configured.")
