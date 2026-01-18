@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import dropbox
 from dropbox.exceptions import ApiError, AuthError
 
@@ -30,8 +32,7 @@ class DropboxClient:
         if not self._dbx_client:
             raise RuntimeError("Dropbox client is not connected.")
 
-        normalized_path = self._normalize_path(path)
-        entries = self._list_folder_entries(normalized_path, recursive=False)
+        entries = self.list_entries(path, recursive=False)
         names = [entry.name for entry in entries]
         return sorted(names, key=str.lower)
 
@@ -41,7 +42,7 @@ class DropboxClient:
             raise RuntimeError("Dropbox client is not connected.")
 
         normalized_path = self._normalize_path(path)
-        entries = self._list_folder_entries(normalized_path, recursive=True)
+        entries = self.list_entries(path, recursive=True)
 
         instruments: set[str] = set()
         voices_by_instrument: dict[str, set[str]] = {}
@@ -66,6 +67,30 @@ class DropboxClient:
                 voices.append(instrument)
 
         return voices
+
+    def list_entries(
+        self,
+        path: str,
+        *,
+        recursive: bool = False,
+    ) -> list[dropbox.files.Metadata]:
+        """Return metadata entries for ``path``."""
+        if not self._dbx_client:
+            raise RuntimeError("Dropbox client is not connected.")
+
+        normalized_path = self._normalize_path(path)
+        return self._list_folder_entries(normalized_path, recursive=recursive)
+
+    def download_file(self, dropbox_path: str, local_path: Path) -> None:
+        """Download a Dropbox file to ``local_path``."""
+        if not self._dbx_client:
+            raise RuntimeError("Dropbox client is not connected.")
+
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._dbx_client.files_download_to_file(str(local_path), dropbox_path)
+        except ApiError as exc:
+            raise Exception(f"Unable to download '{dropbox_path}'.") from exc
 
     @staticmethod
     def _normalize_path(path: str) -> str:
