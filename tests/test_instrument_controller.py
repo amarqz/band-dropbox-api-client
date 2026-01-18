@@ -21,6 +21,7 @@ class InstrumentControllerTests(unittest.TestCase):
             ["[D] Guitar.inst", "[F] skip-me.inst", "[A] Bass.inst"]
         )
         self.assertEqual(self.controller.entries, ["Bass", "Guitar"])
+        self.assertEqual(self.controller.raw_entry_for_display("Guitar"), "Guitar.inst")
 
     def test_adjust_count_respects_bounds(self) -> None:
         self.controller.load_entries(["Guitar"])

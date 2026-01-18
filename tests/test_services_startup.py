@@ -15,6 +15,9 @@ class FakeDropboxClient:
     def list_contents(self, path: str):
         if "library" in path:
             return list(self._library)
+        raise ValueError(path)
+
+    def list_instrument_voices(self, path: str):
         if "inst" in path:
             return list(self._instruments)
         raise ValueError(path)
