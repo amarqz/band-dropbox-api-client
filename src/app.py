@@ -18,6 +18,7 @@ from .controllers.library import LibraryController
 from .client.dropbox_client import DropboxClient
 from .services.downloads import InstrumentSelection, download_selected_pdfs
 from .services.startup import load_initial_data
+from .ui.download_screen import DownloadScreen
 from .ui.commands import StartCommandProvider
 from .ui.detail_panel import build_detail_panel_content
 from .ui.event_handlers import InstrumentEventHandler, LibraryEventHandler
@@ -276,11 +277,22 @@ class BandDropboxApp(App[None]):
                 self.log.error("Instruments path is not configured.")
                 return
 
+            total_steps = len(selected_titles) * len(selected_instruments)
+            download_screen = DownloadScreen()
+            self.push_screen(download_screen)
+            download_screen.reset(total_steps)
+
             try:
                 client = await asyncio.to_thread(DropboxClient, DBX_CONFIG)
             except Exception as exc:
                 self.log.error(f"Dropbox connection failed: {exc}")
                 return
+
+            def progress_callback(completed: int, total: int) -> None:
+                self.call_from_thread(download_screen.update_progress, completed, total)
+
+            def log_callback(message: str) -> None:
+                self.call_from_thread(download_screen.append_log, message)
 
             summary = await asyncio.to_thread(
                 download_selected_pdfs,
@@ -289,9 +301,17 @@ class BandDropboxApp(App[None]):
                 instruments=selected_instruments,
                 instruments_path=self.app_config.instruments_path,
                 download_root=Path("download"),
+                progress_callback=progress_callback,
+                log_callback=log_callback,
             )
             self.log.info(
                 "Downloads complete. "
+                f"Downloaded: {len(summary.downloaded)}, "
+                f"Skipped: {len(summary.skipped)}, "
+                f"Missing: {len(summary.missing)}."
+            )
+            download_screen.append_log(
+                "Complete. "
                 f"Downloaded: {len(summary.downloaded)}, "
                 f"Skipped: {len(summary.skipped)}, "
                 f"Missing: {len(summary.missing)}."

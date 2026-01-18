@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 import dropbox
 
@@ -29,17 +29,33 @@ def download_selected_pdfs(
     instruments: Iterable[InstrumentSelection],
     instruments_path: str,
     download_root: Path,
+    progress_callback: Callable[[int, int], None] | None = None,
+    log_callback: Callable[[str], None] | None = None,
 ) -> DownloadSummary:
     normalized_titles = sorted({title.strip() for title in titles if title.strip()}, key=str.lower)
     if not normalized_titles:
         return DownloadSummary(downloaded=(), skipped=(), missing=())
 
+    instrument_list = list(instruments)
     downloaded: list[str] = []
     skipped: list[str] = []
     missing: list[str] = []
+    completed = 0
+    total = len(normalized_titles) * len(instrument_list)
 
-    for instrument in instruments:
+    def log(message: str) -> None:
+        if log_callback:
+            log_callback(message)
+
+    def advance() -> None:
+        nonlocal completed
+        completed += 1
+        if progress_callback:
+            progress_callback(completed, total)
+
+    for instrument in instrument_list:
         folder_path = _join_dropbox_path(instruments_path, *instrument.raw.split(" / "))
+        log(f"Scanning {instrument.display}...")
         entries = client.list_entries(folder_path, recursive=False)
         files = [
             entry
@@ -52,17 +68,25 @@ def download_selected_pdfs(
             match = _match_pdf_for_title(files, title)
             if not match:
                 missing.append(f"{instrument.display}: {title}")
+                log(f"Missing {instrument.display}: {title}")
+                advance()
                 continue
             local_path = download_root.joinpath(*instrument.display.split(" / "), match.name)
             if local_path.exists():
                 skipped.append(str(local_path))
+                log(f"Skipped {local_path}")
+                advance()
                 continue
             dropbox_path = match.path_lower or match.path_display or ""
             if not dropbox_path:
                 missing.append(f"{instrument.display}: {title}")
+                log(f"Missing {instrument.display}: {title}")
+                advance()
                 continue
             client.download_file(dropbox_path, local_path)
             downloaded.append(str(local_path))
+            log(f"Downloaded {local_path}")
+            advance()
 
     return DownloadSummary(
         downloaded=tuple(downloaded),
