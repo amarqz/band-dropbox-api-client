@@ -99,6 +99,9 @@ class AppConfig(BaseConfig):
     instruments_path: str = ""
     instruments_suffix: str | None = None
     instruments_exclude_substrings: str = ""
+    export_path: str = "exports"
+    export_debug: str = "false"
+    export_a6_instruments: str = ""
 
 APP_CONFIG = AppConfig.from_file()
 

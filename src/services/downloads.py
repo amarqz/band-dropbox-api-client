@@ -13,6 +13,7 @@ from ..client.dropbox_client import DropboxClient
 class InstrumentSelection:
     display: str
     raw: str
+    count: int = 1
 
 
 @dataclass(frozen=True)
@@ -54,8 +55,9 @@ def download_selected_pdfs(
             progress_callback(completed, total)
 
     for instrument in instrument_list:
+        display = instrument.display.strip()
         folder_path = _join_dropbox_path(instruments_path, *instrument.raw.split(" / "))
-        log(f"Scanning {instrument.display}...")
+        log(f"Scanning {display}...")
         entries = client.list_entries(folder_path, recursive=False)
         files = [
             entry
@@ -67,11 +69,11 @@ def download_selected_pdfs(
         for title in normalized_titles:
             match = _match_pdf_for_title(files, title)
             if not match:
-                missing.append(f"{instrument.display}: {title}")
-                log(f"Missing {instrument.display}: {title}")
+                missing.append(f"{display}: {title}")
+                log(f"Missing {display}: {title}")
                 advance()
                 continue
-            local_path = download_root.joinpath(*instrument.display.split(" / "), match.name)
+            local_path = download_root.joinpath(*display.split(" / "), match.name)
             if local_path.exists():
                 skipped.append(str(local_path))
                 log(f"Skipped {local_path}")
@@ -79,8 +81,8 @@ def download_selected_pdfs(
                 continue
             dropbox_path = match.path_lower or match.path_display or ""
             if not dropbox_path:
-                missing.append(f"{instrument.display}: {title}")
-                log(f"Missing {instrument.display}: {title}")
+                missing.append(f"{display}: {title}")
+                log(f"Missing {display}: {title}")
                 advance()
                 continue
             client.download_file(dropbox_path, local_path)

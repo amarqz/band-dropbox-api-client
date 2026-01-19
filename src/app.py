@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from contextlib import suppress
 from pathlib import Path
 
@@ -17,13 +18,17 @@ from .controllers.instruments import InstrumentController
 from .controllers.library import LibraryController
 from .client.dropbox_client import DropboxClient
 from .services.downloads import InstrumentSelection, download_selected_pdfs
+from .services.pdf_export import (
+    export_instrument_collection,
+    export_instrument_collection_a6,
+)
 from .services.startup import load_initial_data
-from .ui.download_screen import DownloadScreen
+from .ui.processing_screen import ProcessingScreen
 from .ui.commands import StartCommandProvider
 from .ui.detail_panel import build_detail_panel_content
 from .ui.event_handlers import InstrumentEventHandler, LibraryEventHandler
 from .ui.layout import compose_layout
-from .util import strip_suffix
+from .util import parse_csv, strip_suffix
 
 
 class BandDropboxApp(App[None]):
@@ -261,8 +266,9 @@ class BandDropboxApp(App[None]):
             selected_titles = sorted(self.library_controller.selected_entries, key=str.lower)
             selected_instruments = [
                 InstrumentSelection(
-                    display=entry,
-                    raw=self.instrument_controller.raw_entry_for_display(entry),
+                    display=entry.strip(),
+                    raw=self.instrument_controller.raw_entry_for_display(entry).strip(),
+                    count=count,
                 )
                 for entry, count in self.instrument_controller.counts.items()
                 if count > 0
@@ -278,9 +284,9 @@ class BandDropboxApp(App[None]):
                 return
 
             total_steps = len(selected_titles) * len(selected_instruments)
-            download_screen = DownloadScreen()
-            self.push_screen(download_screen)
-            download_screen.reset(total_steps)
+            processing_screen = ProcessingScreen()
+            self.push_screen(processing_screen)
+            processing_screen.reset_downloads(total_steps)
 
             try:
                 client = await asyncio.to_thread(DropboxClient, DBX_CONFIG)
@@ -289,33 +295,122 @@ class BandDropboxApp(App[None]):
                 return
 
             def progress_callback(completed: int, total: int) -> None:
-                self.call_from_thread(download_screen.update_progress, completed, total)
+                self.call_from_thread(processing_screen.update_progress, completed, total)
 
             def log_callback(message: str) -> None:
-                self.call_from_thread(download_screen.append_log, message)
+                self.call_from_thread(processing_screen.append_log, message)
 
-            summary = await asyncio.to_thread(
-                download_selected_pdfs,
-                client,
-                titles=selected_titles,
-                instruments=selected_instruments,
-                instruments_path=self.app_config.instruments_path,
-                download_root=Path("download"),
-                progress_callback=progress_callback,
-                log_callback=log_callback,
-            )
-            self.log.info(
-                "Downloads complete. "
-                f"Downloaded: {len(summary.downloaded)}, "
-                f"Skipped: {len(summary.skipped)}, "
-                f"Missing: {len(summary.missing)}."
-            )
-            download_screen.append_log(
-                "Complete. "
-                f"Downloaded: {len(summary.downloaded)}, "
-                f"Skipped: {len(summary.skipped)}, "
-                f"Missing: {len(summary.missing)}."
-            )
+            download_root = Path("download")
+            try:
+                summary = await asyncio.to_thread(
+                    download_selected_pdfs,
+                    client,
+                    titles=selected_titles,
+                    instruments=selected_instruments,
+                    instruments_path=self.app_config.instruments_path,
+                    download_root=download_root,
+                    progress_callback=progress_callback,
+                    log_callback=log_callback,
+                )
+                self.log.info(
+                    "Downloads complete. "
+                    f"Downloaded: {len(summary.downloaded)}, "
+                    f"Skipped: {len(summary.skipped)}, "
+                    f"Missing: {len(summary.missing)}."
+                )
+                processing_screen.append_log(
+                    "Complete. "
+                    f"Downloaded: {len(summary.downloaded)}, "
+                    f"Skipped: {len(summary.skipped)}, "
+                    f"Missing: {len(summary.missing)}."
+                )
+
+                export_dir = Path(self.app_config.export_path).expanduser()
+                a6_names = {
+                    name.lower()
+                    for name in parse_csv(self.app_config.export_a6_instruments)
+                }
+                def is_a6_instrument(instrument: InstrumentSelection) -> bool:
+                    display_lower = instrument.display.strip().lower()
+                    base_lower = display_lower.split(" / ", 1)[0].strip()
+                    return display_lower in a6_names or base_lower in a6_names
+
+                a6_instruments = [
+                    instrument for instrument in selected_instruments if is_a6_instrument(instrument)
+                ]
+                a5_instruments = [
+                    instrument for instrument in selected_instruments if not is_a6_instrument(instrument)
+                ]
+                export_debug = self.app_config.export_debug.strip().lower() == "true"
+                has_export = False
+
+                if a5_instruments:
+                    processing_screen.reset_export()
+                    try:
+                        export_result = await asyncio.to_thread(
+                            export_instrument_collection,
+                            download_root,
+                            titles=selected_titles,
+                            instruments=a5_instruments,
+                            export_dir=export_dir,
+                            log_callback=log_callback,
+                            progress_callback=progress_callback,
+                            debug=export_debug,
+                        )
+                    except Exception as exc:
+                        processing_screen.append_log(f"Export failed: {exc}")
+                        self.log.error(f"Export failed: {exc}")
+                    else:
+                        if export_result.export_path:
+                            has_export = True
+                            processing_screen.append_log(
+                                f"Exported {export_result.export_path}"
+                            )
+                            self.log.info(f"Exported PDF to {export_result.export_path}")
+                        if export_result.debug_report:
+                            processing_screen.append_log(
+                                f"Debug report: {export_result.debug_report}"
+                            )
+                            self.log.info(
+                                f"Export debug report: {export_result.debug_report}"
+                            )
+
+                if a6_instruments:
+                    processing_screen.reset_export()
+                    try:
+                        export_result = await asyncio.to_thread(
+                            export_instrument_collection_a6,
+                            download_root,
+                            titles=selected_titles,
+                            instruments=a6_instruments,
+                            export_dir=export_dir,
+                            log_callback=log_callback,
+                            progress_callback=progress_callback,
+                            debug=export_debug,
+                        )
+                    except Exception as exc:
+                        processing_screen.append_log(f"A6 export failed: {exc}")
+                        self.log.error(f"A6 export failed: {exc}")
+                    else:
+                        if export_result.export_path:
+                            has_export = True
+                            processing_screen.append_log(
+                                f"Exported {export_result.export_path}"
+                            )
+                            self.log.info(f"Exported PDF to {export_result.export_path}")
+                        if export_result.debug_report:
+                            processing_screen.append_log(
+                                f"Debug report: {export_result.debug_report}"
+                            )
+                            self.log.info(
+                                f"Export debug report: {export_result.debug_report}"
+                            )
+
+                if not has_export:
+                    processing_screen.append_log("No export generated.")
+                    self.log.warning("No export generated.")
+            finally:
+                shutil.rmtree(download_root, ignore_errors=True)
         finally:
             button.label = "Start"
             self._start_task = None
