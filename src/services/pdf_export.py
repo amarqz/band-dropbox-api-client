@@ -15,6 +15,8 @@ A4_WIDTH = 595.28
 A4_HEIGHT = 841.89
 A5_LANDSCAPE_WIDTH = A4_WIDTH
 A5_LANDSCAPE_HEIGHT = A4_HEIGHT / 2
+A6_PORTRAIT_WIDTH = A4_WIDTH / 2
+A6_PORTRAIT_HEIGHT = A4_HEIGHT / 2
 
 
 @dataclass(frozen=True)
@@ -35,95 +37,48 @@ def export_instrument_collection(
     progress_callback: Callable[[int, int], None] | None = None,
     debug: bool = False,
 ) -> ExportResult:
-    normalized_titles = _normalize_titles(titles)
-    if not normalized_titles:
-        return ExportResult(export_path=None, pages_written=0, missing_files=())
+    return _export_collection(
+        download_root,
+        titles=titles,
+        instruments=instruments,
+        export_dir=export_dir,
+        log_callback=log_callback,
+        progress_callback=progress_callback,
+        debug=debug,
+        converter=_to_a5_landscape,
+        blanks_per_page=2,
+        positions=((0, A5_LANDSCAPE_HEIGHT), (0, 0)),
+        export_prefix="export",
+    )
 
-    ordered_instruments = sorted(instruments, key=lambda item: item.display.lower())
-    work_items: list[tuple[str, str, Path]] = []
-    missing: list[str] = []
-    debug_lines: list[str] = [] if debug else []
 
-    for instrument in ordered_instruments:
-        repeats = instrument.count
-        if repeats <= 0:
-            continue
-        for _ in range(repeats):
-            for title in normalized_titles:
-                pdf_path = _find_local_pdf(download_root, instrument.display, title)
-                if not pdf_path:
-                    missing.append(f"{instrument.display}: {title}")
-                    _log(log_callback, f"Missing {instrument.display}: {title}")
-                    continue
-                work_items.append((instrument.display, title, pdf_path))
-
-    total_items = len(work_items)
-    _report_progress(progress_callback, 0, total_items)
-
-    a5_pages: list[PageObject] = []
-    completed = 0
-    for instrument_display, _, pdf_path in work_items:
-        _log(log_callback, f"Preparing {pdf_path.name} for {instrument_display}...")
-        try:
-            for index, page in enumerate(_pages_from_pdf(pdf_path), start=1):
-                if not hasattr(page, "mediabox"):
-                    _log(
-                        log_callback,
-                        f"Skipped non-page object in {pdf_path.name}.",
-                    )
-                    if debug:
-                        debug_lines.append(
-                            f"{pdf_path.name} page {index}: skipped non-page object"
-                        )
-                    continue
-                if debug:
-                    debug_lines.append(
-                        f"{pdf_path.name} page {index}: {_describe_page(page)}"
-                    )
-                a5_pages.append(_to_a5_landscape(page))
-        except Exception as exc:
-            _log(log_callback, f"Failed to read {pdf_path.name}: {exc}")
-            if debug:
-                debug_lines.append(f"{pdf_path.name}: failed to read ({exc})")
-        completed += 1
-        _report_progress(progress_callback, completed, total_items)
-
-    debug_report = _write_debug_report(export_dir, debug_lines) if debug else None
-    if debug_report:
-        _log(log_callback, f"Debug report saved: {debug_report}")
-
-    if not a5_pages:
-        return ExportResult(
-            export_path=None,
-            pages_written=0,
-            missing_files=tuple(missing),
-            debug_report=debug_report,
-        )
-
-    if len(a5_pages) % 2 != 0:
-        a5_pages.append(_blank_a5_page())
-
-    half = len(a5_pages) // 2
-    top_pages = a5_pages[:half]
-    bottom_pages = a5_pages[half:]
-
-    writer = PdfWriter()
-    for top_page, bottom_page in zip(top_pages, bottom_pages, strict=True):
-        a4_page = PageObject.create_blank_page(width=A4_WIDTH, height=A4_HEIGHT)
-        _merge_page_at(a4_page, bottom_page, 0, 0)
-        _merge_page_at(a4_page, top_page, 0, A5_LANDSCAPE_HEIGHT)
-        writer.add_page(a4_page)
-
-    export_dir.mkdir(parents=True, exist_ok=True)
-    export_path = export_dir / _export_filename()
-    with export_path.open("wb") as handle:
-        writer.write(handle)
-
-    return ExportResult(
-        export_path=export_path,
-        pages_written=len(a5_pages),
-        missing_files=tuple(missing),
-        debug_report=debug_report,
+def export_instrument_collection_a6(
+    download_root: Path,
+    *,
+    titles: Sequence[str],
+    instruments: Sequence[InstrumentSelection],
+    export_dir: Path,
+    log_callback: Callable[[str], None] | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+    debug: bool = False,
+) -> ExportResult:
+    return _export_collection(
+        download_root,
+        titles=titles,
+        instruments=instruments,
+        export_dir=export_dir,
+        log_callback=log_callback,
+        progress_callback=progress_callback,
+        debug=debug,
+        converter=_to_a6_portrait,
+        blanks_per_page=4,
+        positions=(
+            (0, A6_PORTRAIT_HEIGHT),
+            (A6_PORTRAIT_WIDTH, A6_PORTRAIT_HEIGHT),
+            (0, 0),
+            (A6_PORTRAIT_WIDTH, 0),
+        ),
+        export_prefix="export_A6",
     )
 
 
@@ -150,8 +105,8 @@ def _normalize_titles(titles: Sequence[str]) -> list[str]:
     return sorted({title.strip() for title in titles if title.strip()}, key=str.lower)
 
 
-def _export_filename() -> str:
-    return f"export_{date.today():%Y%m%d}.pdf"
+def _export_filename(prefix: str) -> str:
+    return f"{prefix}_{date.today():%Y%m%d}.pdf"
 
 
 def _pages_from_pdf(path: Path) -> Iterable[PageObject]:
@@ -194,6 +149,10 @@ def _blank_a5_page() -> PageObject:
     return PageObject.create_blank_page(width=A5_LANDSCAPE_WIDTH, height=A5_LANDSCAPE_HEIGHT)
 
 
+def _blank_a6_page() -> PageObject:
+    return PageObject.create_blank_page(width=A6_PORTRAIT_WIDTH, height=A6_PORTRAIT_HEIGHT)
+
+
 def _to_a5_landscape(page: PageObject) -> PageObject:
     working = _normalized_page_view(page)
     width = float(working.mediabox.width)
@@ -217,6 +176,34 @@ def _to_a5_landscape(page: PageObject) -> PageObject:
     target = PageObject.create_blank_page(
         width=A5_LANDSCAPE_WIDTH,
         height=A5_LANDSCAPE_HEIGHT,
+    )
+    target.merge_page(working)
+    return target
+
+
+def _to_a6_portrait(page: PageObject) -> PageObject:
+    working = _normalized_page_view(page)
+    width = float(working.mediabox.width)
+    height = float(working.mediabox.height)
+    if width > height:
+        working = _rotate_content(working, 90)
+        width = float(working.mediabox.width)
+        height = float(working.mediabox.height)
+
+    scale = min(A6_PORTRAIT_WIDTH / width, A6_PORTRAIT_HEIGHT / height)
+    if scale != 1.0:
+        working.scale_by(scale)
+        width *= scale
+        height *= scale
+
+    tx = (A6_PORTRAIT_WIDTH - width) / 2
+    ty = (A6_PORTRAIT_HEIGHT - height) / 2
+    if tx or ty:
+        working.add_transformation(Transformation().translate(tx, ty))
+
+    target = PageObject.create_blank_page(
+        width=A6_PORTRAIT_WIDTH,
+        height=A6_PORTRAIT_HEIGHT,
     )
     target.merge_page(working)
     return target
@@ -367,13 +354,123 @@ def _format_optional_box(page: PageObject, name: str) -> str:
         return "unavailable"
 
 
-def _write_debug_report(export_dir: Path, lines: list[str]) -> Path | None:
+def _write_debug_report(export_dir: Path, lines: list[str], prefix: str) -> Path | None:
     if not lines:
         return None
     export_dir.mkdir(parents=True, exist_ok=True)
-    report_path = export_dir / f"{_export_filename()[:-4]}_debug.txt"
+    report_path = export_dir / f"{_export_filename(prefix)[:-4]}_debug.txt"
     report_path.write_text("\n".join(lines), encoding="utf-8")
     return report_path
+
+
+def _export_collection(
+    download_root: Path,
+    *,
+    titles: Sequence[str],
+    instruments: Sequence[InstrumentSelection],
+    export_dir: Path,
+    log_callback: Callable[[str], None] | None,
+    progress_callback: Callable[[int, int], None] | None,
+    debug: bool,
+    converter: Callable[[PageObject], PageObject],
+    blanks_per_page: int,
+    positions: tuple[tuple[float, float], ...],
+    export_prefix: str,
+) -> ExportResult:
+    normalized_titles = _normalize_titles(titles)
+    if not normalized_titles:
+        return ExportResult(
+            export_path=None,
+            pages_written=0,
+            missing_files=(),
+            debug_report=None,
+        )
+
+    ordered_instruments = sorted(instruments, key=lambda item: item.display.lower())
+    work_items: list[tuple[str, str, Path]] = []
+    missing: list[str] = []
+    debug_lines: list[str] = [] if debug else []
+
+    for instrument in ordered_instruments:
+        repeats = instrument.count
+        if repeats <= 0:
+            continue
+        for _ in range(repeats):
+            for title in normalized_titles:
+                pdf_path = _find_local_pdf(download_root, instrument.display, title)
+                if not pdf_path:
+                    missing.append(f"{instrument.display}: {title}")
+                    _log(log_callback, f"Missing {instrument.display}: {title}")
+                    continue
+                work_items.append((instrument.display, title, pdf_path))
+
+    total_items = len(work_items)
+    _report_progress(progress_callback, 0, total_items)
+
+    pages: list[PageObject] = []
+    completed = 0
+    for instrument_display, _, pdf_path in work_items:
+        _log(log_callback, f"Preparing {pdf_path.name} for {instrument_display}...")
+        try:
+            for index, page in enumerate(_pages_from_pdf(pdf_path), start=1):
+                if not hasattr(page, "mediabox"):
+                    _log(
+                        log_callback,
+                        f"Skipped non-page object in {pdf_path.name}.",
+                    )
+                    if debug:
+                        debug_lines.append(
+                            f"{pdf_path.name} page {index}: skipped non-page object"
+                        )
+                    continue
+                if debug:
+                    debug_lines.append(
+                        f"{pdf_path.name} page {index}: {_describe_page(page)}"
+                    )
+                pages.append(converter(page))
+        except Exception as exc:
+            _log(log_callback, f"Failed to read {pdf_path.name}: {exc}")
+            if debug:
+                debug_lines.append(f"{pdf_path.name}: failed to read ({exc})")
+        completed += 1
+        _report_progress(progress_callback, completed, total_items)
+
+    debug_report = _write_debug_report(export_dir, debug_lines, export_prefix) if debug else None
+    if debug_report:
+        _log(log_callback, f"Debug report saved: {debug_report}")
+
+    if not pages:
+        return ExportResult(
+            export_path=None,
+            pages_written=0,
+            missing_files=tuple(missing),
+            debug_report=debug_report,
+        )
+
+    blank_page = _blank_a5_page if blanks_per_page == 2 else _blank_a6_page
+    while len(pages) % blanks_per_page != 0:
+        pages.append(blank_page())
+
+    writer = PdfWriter()
+    group_size = blanks_per_page
+    for i in range(0, len(pages), group_size):
+        group = pages[i : i + group_size]
+        a4_page = PageObject.create_blank_page(width=A4_WIDTH, height=A4_HEIGHT)
+        for page, (x, y) in zip(group, positions, strict=True):
+            _merge_page_at(a4_page, page, x, y)
+        writer.add_page(a4_page)
+
+    export_dir.mkdir(parents=True, exist_ok=True)
+    export_path = export_dir / _export_filename(export_prefix)
+    with export_path.open("wb") as handle:
+        writer.write(handle)
+
+    return ExportResult(
+        export_path=export_path,
+        pages_written=len(pages),
+        missing_files=tuple(missing),
+        debug_report=debug_report,
+    )
 
 
 def _log(callback: Callable[[str], None] | None, message: str) -> None:

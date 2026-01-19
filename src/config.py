@@ -101,6 +101,7 @@ class AppConfig(BaseConfig):
     instruments_exclude_substrings: str = ""
     export_path: str = "exports"
     export_debug: str = "false"
+    export_a6_instruments: str = ""
 
 APP_CONFIG = AppConfig.from_file()
 

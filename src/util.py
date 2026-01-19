@@ -18,3 +18,11 @@ def contains_any_substring(entry: str, substrings: Iterable[str]) -> bool:
 def remove_library_suffix(entry: str, suffix: str) -> str:
     """Backward compatible helper delegating to :func:`strip_suffix`."""
     return strip_suffix(entry, suffix)
+
+
+def parse_csv(raw: str | None) -> tuple[str, ...]:
+    """Return comma-separated values stripped of whitespace."""
+    if not raw:
+        return ()
+    parts = (part.strip() for part in raw.split(","))
+    return tuple(part for part in parts if part)
