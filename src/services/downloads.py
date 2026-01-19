@@ -13,6 +13,7 @@ from ..client.dropbox_client import DropboxClient
 class InstrumentSelection:
     display: str
     raw: str
+    count: int = 1
 
 
 @dataclass(frozen=True)
