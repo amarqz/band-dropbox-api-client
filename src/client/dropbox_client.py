@@ -2,12 +2,126 @@
 
 from __future__ import annotations
 
+import json
+import os
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import dropbox
 from dropbox.exceptions import ApiError, AuthError
+from dropbox.oauth import DropboxOAuth2FlowNoRedirect
 
 from src.config import DropboxConfig
+
+
+@dataclass(frozen=True)
+class OAuthToken:
+    access_token: str
+    refresh_token: str | None = None
+    expires_at: float | None = None
+
+
+def _resolve_token_cache_path(config: DropboxConfig) -> Path:
+    return Path(os.path.expanduser(config.token_cache_path)).resolve()
+
+
+def _load_cached_token(config: DropboxConfig) -> OAuthToken | None:
+    cache_path = _resolve_token_cache_path(config)
+    if not cache_path.exists():
+        return None
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeError):
+        return None
+    access_token = payload.get("access_token")
+    if not access_token:
+        return None
+    expires_at = payload.get("expires_at")
+    if isinstance(expires_at, (int, float)):
+        normalized_expires = float(expires_at)
+    elif isinstance(expires_at, str):
+        try:
+            normalized_expires = float(expires_at)
+        except ValueError:
+            normalized_expires = None
+    else:
+        normalized_expires = None
+    return OAuthToken(
+        access_token=access_token,
+        refresh_token=payload.get("refresh_token"),
+        expires_at=normalized_expires,
+    )
+
+
+def _save_cached_token(config: DropboxConfig, token: OAuthToken) -> None:
+    if isinstance(token.expires_at, datetime):
+        expires_at = token.expires_at.astimezone(timezone.utc).timestamp()
+    else:
+        expires_at = token.expires_at
+    cache_path = _resolve_token_cache_path(config)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "access_token": token.access_token,
+        "refresh_token": token.refresh_token,
+        "expires_at": expires_at,
+    }
+    cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def ensure_access_token(
+    config: DropboxConfig,
+    *,
+    interactive: bool = True,
+) -> DropboxConfig:
+    """Ensure a usable access token, prompting for OAuth2 if needed."""
+    if config.access_token:
+        return config
+
+    cached = _load_cached_token(config)
+    if cached:
+        return config.with_overrides(
+            access_token=cached.access_token,
+            refresh_token=cached.refresh_token,
+        )
+
+    if not interactive or not config.app_key:
+        return config
+
+    token_access_type = (config.token_access_type or "offline").strip() or "offline"
+    use_pkce = not config.app_secret
+    try:
+        flow = DropboxOAuth2FlowNoRedirect(
+            config.app_key,
+            config.app_secret,
+            token_access_type=token_access_type,
+            use_pkce=use_pkce,
+        )
+    except TypeError:
+        flow = DropboxOAuth2FlowNoRedirect(
+            config.app_key,
+            config.app_secret,
+            token_access_type=token_access_type,
+        )
+    authorize_url = flow.start()
+    print("\nDropbox authorization required.")
+    print("1) Open this URL in your browser:")
+    print(authorize_url)
+    print("2) Click Allow, then copy the authorization code.")
+    sys.stdout.flush()
+    auth_code = input("Paste the authorization code here: ").strip()
+    result = flow.finish(auth_code)
+    token = OAuthToken(
+        access_token=result.access_token,
+        refresh_token=getattr(result, "refresh_token", None),
+        expires_at=getattr(result, "expires_at", None),
+    )
+    _save_cached_token(config, token)
+    return config.with_overrides(
+        access_token=token.access_token,
+        refresh_token=token.refresh_token,
+    )
 
 
 class DropboxClient:
@@ -16,13 +130,26 @@ class DropboxClient:
     def __init__(self, config: DropboxConfig):
         self.config: DropboxConfig = config
         self._access_token: str | None = self.config.access_token
+        self._refresh_token: str | None = self.config.refresh_token
         self._dbx_client: dropbox.Dropbox | None = None
 
-        if not self._access_token:
+        if not self._access_token and not self._refresh_token:
             raise Exception("Cannot connect! The DBX access token is missing in the configurations.")
         
         try:
-            self._dbx_client = dropbox.Dropbox(self._access_token)
+            if self._refresh_token and self.config.app_key and self.config.app_secret:
+                self._dbx_client = dropbox.Dropbox(
+                    oauth2_access_token=self._access_token,
+                    oauth2_refresh_token=self._refresh_token,
+                    app_key=self.config.app_key,
+                    app_secret=self.config.app_secret,
+                )
+            elif self._access_token:
+                self._dbx_client = dropbox.Dropbox(self._access_token)
+            else:
+                raise Exception(
+                    "Cannot connect! The DBX refresh token requires app_key and app_secret."
+                )
             self._dbx_client.users_get_current_account()
         except AuthError as e:
             raise Exception("Cannot connect!", e.error)
