@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -54,17 +55,34 @@ def download_selected_pdfs(
         if progress_callback:
             progress_callback(completed, total)
 
+    files_by_instrument: dict[str, list[dropbox.files.FileMetadata]] = {}
+    if instrument_list:
+        workers = max(1, min(8, len(instrument_list)))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    client.list_entries,
+                    _join_dropbox_path(instruments_path, *instrument.raw.split(" / ")),
+                    recursive=False,
+                ): instrument.display.strip()
+                for instrument in instrument_list
+            }
+            for display in futures.values():
+                log(f"Scanning {display}...")
+            for future in as_completed(futures):
+                display = futures[future]
+                entries = future.result()
+                files_by_instrument[display] = [
+                    entry
+                    for entry in entries
+                    if isinstance(entry, dropbox.files.FileMetadata)
+                    and entry.name.lower().endswith(".pdf")
+                ]
+
+    download_jobs: list[tuple[str, str, Path]] = []
     for instrument in instrument_list:
         display = instrument.display.strip()
-        folder_path = _join_dropbox_path(instruments_path, *instrument.raw.split(" / "))
-        log(f"Scanning {display}...")
-        entries = client.list_entries(folder_path, recursive=False)
-        files = [
-            entry
-            for entry in entries
-            if isinstance(entry, dropbox.files.FileMetadata)
-            and entry.name.lower().endswith(".pdf")
-        ]
+        files = files_by_instrument.get(display, [])
 
         for title in normalized_titles:
             match = _match_pdf_for_title(files, title)
@@ -73,22 +91,36 @@ def download_selected_pdfs(
                 log(f"Missing {display}: {title}")
                 advance()
                 continue
+
             local_path = download_root.joinpath(*display.split(" / "), match.name)
             if local_path.exists():
                 skipped.append(str(local_path))
                 log(f"Skipped {local_path}")
                 advance()
                 continue
+
             dropbox_path = match.path_lower or match.path_display or ""
             if not dropbox_path:
                 missing.append(f"{display}: {title}")
                 log(f"Missing {display}: {title}")
                 advance()
                 continue
-            client.download_file(dropbox_path, local_path)
-            downloaded.append(str(local_path))
-            log(f"Downloaded {local_path}")
-            advance()
+
+            download_jobs.append((dropbox_path, str(local_path), local_path))
+
+    if download_jobs:
+        workers = max(1, min(6, len(download_jobs)))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(client.download_file, dropbox_path, local_path): local_path_str
+                for dropbox_path, local_path_str, local_path in download_jobs
+            }
+            for future in as_completed(futures):
+                local_path_str = futures[future]
+                future.result()
+                downloaded.append(local_path_str)
+                log(f"Downloaded {local_path_str}")
+                advance()
 
     return DownloadSummary(
         downloaded=tuple(downloaded),

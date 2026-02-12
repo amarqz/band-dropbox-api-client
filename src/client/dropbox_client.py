@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -296,29 +297,53 @@ class DropboxClient:
         names = [entry.name for entry in entries]
         return sorted(names, key=str.lower)
 
-    def list_instrument_voices(self, path: str) -> list[str]:
+    def list_instrument_voices(self, path: str, *, max_workers: int = 8) -> list[str]:
         """Return a listing of instrument voices found under ``path``."""
         if not self._dbx_client:
             raise RuntimeError("Dropbox client is not connected.")
 
         normalized_path = self._normalize_path(path)
-        entries = self.list_entries(path, recursive=True)
+        root_entries = self.list_entries(path, recursive=False)
+        instrument_names = sorted(
+            {
+                parts[0]
+                for entry in root_entries
+                if isinstance(entry, dropbox.files.FolderMetadata)
+                for parts in [self._relative_parts(entry.path_display or entry.path_lower or "", normalized_path)]
+                if len(parts) == 1
+            },
+            key=str.lower,
+        )
 
-        instruments: set[str] = set()
         voices_by_instrument: dict[str, set[str]] = {}
-
-        for entry in entries:
-            entry_path = entry.path_display or entry.path_lower or ""
-            parts = self._relative_parts(entry_path, normalized_path)
-            if not parts:
-                continue
-            if len(parts) == 1 and isinstance(entry, dropbox.files.FolderMetadata):
-                instruments.add(parts[0])
-            elif len(parts) == 2 and isinstance(entry, dropbox.files.FolderMetadata):
-                voices_by_instrument.setdefault(parts[0], set()).add(parts[1])
+        if instrument_names:
+            workers = max(1, min(max_workers, len(instrument_names)))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(
+                        self.list_entries,
+                        self._join_paths(normalized_path, instrument),
+                        recursive=False,
+                    ): instrument
+                    for instrument in instrument_names
+                }
+                for future in as_completed(futures):
+                    instrument = futures[future]
+                    instrument_path = self._join_paths(normalized_path, instrument)
+                    entries = future.result()
+                    voices: set[str] = set()
+                    for entry in entries:
+                        if not isinstance(entry, dropbox.files.FolderMetadata):
+                            continue
+                        entry_path = entry.path_display or entry.path_lower or ""
+                        parts = self._relative_parts(entry_path, instrument_path)
+                        if len(parts) == 1:
+                            voices.add(parts[0])
+                    if voices:
+                        voices_by_instrument[instrument] = voices
 
         voices: list[str] = []
-        for instrument in sorted(instruments, key=str.lower):
+        for instrument in instrument_names:
             voice_names = voices_by_instrument.get(instrument)
             if voice_names:
                 for voice in sorted(voice_names, key=str.lower):
@@ -358,6 +383,16 @@ class DropboxClient:
         if normalized_path == "/":
             return ""
         return normalized_path
+
+    @staticmethod
+    def _join_paths(root: str, leaf: str) -> str:
+        normalized_root = root.strip().rstrip("/")
+        normalized_leaf = leaf.strip().strip("/")
+        if not normalized_root:
+            return f"/{normalized_leaf}" if normalized_leaf else ""
+        if not normalized_leaf:
+            return normalized_root
+        return f"{normalized_root}/{normalized_leaf}"
 
     def _list_folder_entries(
         self,
