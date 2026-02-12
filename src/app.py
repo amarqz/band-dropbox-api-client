@@ -296,7 +296,7 @@ class BandDropboxApp(App[None]):
             processing_screen.reset_downloads(total_steps)
 
             try:
-                client = await asyncio.to_thread(DropboxClient, DBX_CONFIG)
+                client = await asyncio.to_thread(DropboxClient, self.dbx_config)
             except Exception as exc:
                 self.log.error(f"Dropbox connection failed: {exc}")
                 return

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -70,17 +71,51 @@ def _save_cached_token(config: DropboxConfig, token: OAuthToken) -> None:
     cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _is_expired(expires_at: float | None) -> bool:
+    if expires_at is None:
+        return False
+    # Keep a small skew so nearly-expired tokens are treated as expired.
+    return expires_at <= time.time() + 30
+
+
 def ensure_access_token(
     config: DropboxConfig,
     *,
     interactive: bool = True,
 ) -> DropboxConfig:
     """Ensure a usable access token, prompting for OAuth2 if needed."""
+    cached = _load_cached_token(config)
+
     if config.access_token:
+        if config.refresh_token:
+            if cached and cached.refresh_token and _is_expired(cached.expires_at):
+                return config.with_overrides(
+                    access_token=None,
+                    refresh_token=cached.refresh_token,
+                )
+            return config
+        if cached and cached.refresh_token:
+            if _is_expired(cached.expires_at):
+                return config.with_overrides(
+                    access_token=None,
+                    refresh_token=cached.refresh_token,
+                )
+            return config.with_overrides(refresh_token=cached.refresh_token)
         return config
 
-    cached = _load_cached_token(config)
     if cached:
+        if _is_expired(cached.expires_at):
+            if cached.refresh_token and config.app_key:
+                # Let SDK refresh with the refresh token.
+                return config.with_overrides(
+                    access_token=None,
+                    refresh_token=cached.refresh_token,
+                )
+        else:
+            return config.with_overrides(
+                access_token=cached.access_token,
+                refresh_token=cached.refresh_token,
+            )
         return config.with_overrides(
             access_token=cached.access_token,
             refresh_token=cached.refresh_token,
@@ -137,22 +172,120 @@ class DropboxClient:
             raise Exception("Cannot connect! The DBX access token is missing in the configurations.")
         
         try:
-            if self._refresh_token and self.config.app_key and self.config.app_secret:
+            if self._refresh_token and self.config.app_key:
                 self._dbx_client = dropbox.Dropbox(
                     oauth2_access_token=self._access_token,
                     oauth2_refresh_token=self._refresh_token,
                     app_key=self.config.app_key,
                     app_secret=self.config.app_secret,
                 )
+                if self._is_expired_by_cached_metadata():
+                    self._refresh_on_expiry_and_persist()
             elif self._access_token:
                 self._dbx_client = dropbox.Dropbox(self._access_token)
             else:
                 raise Exception(
-                    "Cannot connect! The DBX refresh token requires app_key and app_secret."
+                    "Cannot connect! The DBX refresh token requires app_key."
                 )
             self._dbx_client.users_get_current_account()
+            if self._access_token is None and self._refresh_token:
+                self._persist_runtime_token()
         except AuthError as e:
+            if self._refresh_on_auth_error_and_persist():
+                return
             raise Exception("Cannot connect!", e.error)
+
+    def _is_expired_by_cached_metadata(self) -> bool:
+        if not self._access_token:
+            return True
+        cached = _load_cached_token(self.config)
+        if not cached or not cached.refresh_token:
+            return False
+        if cached.access_token != self._access_token:
+            return False
+        return _is_expired(cached.expires_at)
+
+    def _persist_runtime_token(self) -> None:
+        if not self._dbx_client:
+            return
+
+        access_token = getattr(self._dbx_client, "_oauth2_access_token", None)
+        refresh_token = getattr(self._dbx_client, "_oauth2_refresh_token", None)
+        expires_at = getattr(self._dbx_client, "_oauth2_access_token_expiration", None)
+        if not access_token or not refresh_token:
+            return
+
+        try:
+            _save_cached_token(
+                self.config,
+                OAuthToken(
+                    access_token=access_token,
+                    refresh_token=refresh_token,
+                    expires_at=expires_at,
+                ),
+            )
+        except OSError:
+            return
+
+    def _refresh_on_auth_error_and_persist(self) -> bool:
+        if not self._dbx_client:
+            return False
+        if not self._refresh_token or not self.config.app_key:
+            return False
+
+        previous_access_token = getattr(self._dbx_client, "_oauth2_access_token", None)
+        self._dbx_client.check_and_refresh_access_token()
+        access_token = getattr(self._dbx_client, "_oauth2_access_token", None)
+        refresh_token = getattr(self._dbx_client, "_oauth2_refresh_token", None)
+        expires_at = getattr(self._dbx_client, "_oauth2_access_token_expiration", None)
+        if not access_token or not refresh_token:
+            return False
+        if access_token == previous_access_token:
+            return False
+
+        self._dbx_client.users_get_current_account()
+
+        try:
+            _save_cached_token(
+                self.config,
+                OAuthToken(
+                    access_token=access_token,
+                    refresh_token=refresh_token,
+                    expires_at=expires_at,
+                ),
+            )
+        except OSError:
+            # Cache write failures should not block the app's Dropbox session.
+            return True
+        return True
+
+    def _refresh_on_expiry_and_persist(self) -> None:
+        if not self._dbx_client:
+            return
+        if not self._refresh_token or not self.config.app_key:
+            return
+
+        previous_access_token = getattr(self._dbx_client, "_oauth2_access_token", None)
+        self._dbx_client.check_and_refresh_access_token()
+        access_token = getattr(self._dbx_client, "_oauth2_access_token", None)
+        refresh_token = getattr(self._dbx_client, "_oauth2_refresh_token", None)
+        expires_at = getattr(self._dbx_client, "_oauth2_access_token_expiration", None)
+        if not access_token or not refresh_token:
+            return
+        if access_token == previous_access_token:
+            return
+
+        try:
+            _save_cached_token(
+                self.config,
+                OAuthToken(
+                    access_token=access_token,
+                    refresh_token=refresh_token,
+                    expires_at=expires_at,
+                ),
+            )
+        except OSError:
+            return
 
     def list_contents(self, path: str = "") -> list[str]:
         """Return a formatted listing of the contents for ``path``."""
