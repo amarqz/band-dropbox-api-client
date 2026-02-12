@@ -114,6 +114,11 @@ class DropboxConfig(BaseConfig):
     """
     
     access_token: str | None = None
+    refresh_token: str | None = None
+    app_key: str | None = None
+    app_secret: str | None = None
+    token_access_type: str = "offline"
+    token_cache_path: str = "~/.config/band-dropbox-api-client/dropbox_token.json"
 
 DBX_CONFIG = DropboxConfig.from_file()
 

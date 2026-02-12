@@ -61,6 +61,10 @@ Key settings:
 - `[app].export_debug`: Set to `true` to write debug reports about page sizing/rotation.
 - `[app].export_a6_instruments`: Comma-separated list of instruments exported in A6.
 - `[dropbox].access_token`: Dropbox API access token (keep this private).
+- `[dropbox].app_key`: Dropbox app key for OAuth2 (required for interactive auth).
+- `[dropbox].app_secret`: Dropbox app secret for OAuth2 (required for refresh tokens).
+- `[dropbox].token_access_type`: OAuth2 token access type (`offline` for refresh tokens, `online` for short-lived).
+- `[dropbox].token_cache_path`: Local file path used to cache OAuth2 tokens.
 
 ## Expected Dropbox Organization
 
@@ -161,6 +165,23 @@ Missing PDFs are reported in the processing log.
 - "Cannot connect! The DBX access token is missing": set `[dropbox].access_token` in `src/resources/application.conf`.
 - "Unable to list folder": check the configured Dropbox paths and API permissions.
 - No export generated: ensure PDFs exist for each selected title and instrument.
+
+## OAuth2 (no redirect server required)
+
+If you don't want to generate tokens manually, add your Dropbox app credentials in
+`src/resources/application.conf`:
+
+```
+[dropbox]
+app_key = your_app_key
+app_secret = your_app_secret
+```
+
+On startup, the app will print an authorization URL, prompt you to paste the
+authorization code, and cache the resulting tokens in
+`[dropbox].token_cache_path`. If you set `token_access_type = offline`, the app
+will request a refresh token so it can keep working after the access token
+expires.
 
 ## Development Notes
 

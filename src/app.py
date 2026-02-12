@@ -13,10 +13,10 @@ from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from .actions import ActionHistory, InstrumentAction, SelectionAction
-from .config import APP_CONFIG, AppConfig, DBX_CONFIG
+from .config import APP_CONFIG, AppConfig, DBX_CONFIG, DropboxConfig
 from .controllers.instruments import InstrumentController
 from .controllers.library import LibraryController
-from .client.dropbox_client import DropboxClient
+from .client.dropbox_client import DropboxClient, ensure_access_token
 from .services.downloads import InstrumentSelection, download_selected_pdfs
 from .services.pdf_export import (
     export_instrument_collection,
@@ -47,9 +47,16 @@ class BandDropboxApp(App[None]):
 
     is_loading = reactive(True)
 
-    def __init__(self, *, app_config: AppConfig | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        *,
+        app_config: AppConfig | None = None,
+        dbx_config: DropboxConfig | None = None,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         self.app_config = app_config or APP_CONFIG
+        self.dbx_config = dbx_config or DBX_CONFIG
         self.library_controller = LibraryController(self.app_config.library_placeholder)
         self.instrument_controller = InstrumentController(
             placeholder=self.app_config.instruments_placeholder,
@@ -97,7 +104,7 @@ class BandDropboxApp(App[None]):
 
     async def _startup(self) -> None:
         """Start the application by connecting to Dropbox and loading data."""
-        result = await load_initial_data(self.app_config, DBX_CONFIG)
+        result = await load_initial_data(self.app_config, self.dbx_config)
 
         if result.library_entries is not None:
             library_entries = self._prepare_library_entries(result.library_entries)
@@ -289,7 +296,7 @@ class BandDropboxApp(App[None]):
             processing_screen.reset_downloads(total_steps)
 
             try:
-                client = await asyncio.to_thread(DropboxClient, DBX_CONFIG)
+                client = await asyncio.to_thread(DropboxClient, self.dbx_config)
             except Exception as exc:
                 self.log.error(f"Dropbox connection failed: {exc}")
                 return
@@ -440,5 +447,6 @@ class BandDropboxApp(App[None]):
 
 
 if __name__ == "__main__":
-    app = BandDropboxApp()
+    dbx_config = ensure_access_token(DropboxConfig.from_file())
+    app = BandDropboxApp(dbx_config=dbx_config)
     app.run()
